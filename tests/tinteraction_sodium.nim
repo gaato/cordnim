@@ -1,11 +1,17 @@
-import std/unittest
-
-when defined(cordnimSodium):
-  import std/strutils
+import std/[strutils, unittest]
 
 import cordnim/interactions
 
 suite "libsodium interaction verifier":
+  test "parses Discord application public keys":
+    let key = parseEd25519PublicKey(repeat('a', 64))
+    check key[0] == 0xAA'u8
+    check key[^1] == 0xAA'u8
+    expect ValueError:
+      discard parseEd25519PublicKey("short")
+    expect ValueError:
+      discard parseEd25519PublicKey(repeat('z', 64))
+
   test "default builds fail closed without a native verifier":
     when defined(cordnimSodium):
       check sodiumVerifierEnabled

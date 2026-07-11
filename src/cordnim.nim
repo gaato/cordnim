@@ -1,15 +1,22 @@
-## High-level cordnim application framework.
+## High-level cordnim v0.1 application surface.
 ##
-## Import narrower modules such as `cordnim/raw`, `cordnim/rest`, or
-## `cordnim/gateway` when protocol-level control is required. The main module
-## exports the application-facing types without merging colliding raw wire
-## names into the same namespace.
+## This module exports application composition, command declarations,
+## component builders, core types, and the webhook-only runtime factory.
+## Import `cordnim/interactions`, `cordnim/raw`, `cordnim/rest`, or
+## `cordnim/gateway` explicitly for lower-level protocol and transport control.
 
-import cordnim/[app, application_manifest, commands, components, core,
-  interactions, runtime]
+import cordnim/[app, application_manifest, commands, components, core]
+from cordnim/interactions/http_runtime import InteractionHttpRuntime,
+  localAddress, newInteractionHttpRuntime
+from cordnim/interactions/sodium_verifier import sodiumVerificationConfig,
+  sodiumVerifierEnabled
+from cordnim/interactions/verification import VerificationConfig,
+  parseEd25519PublicKey
 
-export app, application_manifest, commands, components, core, interactions,
-  runtime
+export app, application_manifest, commands, components, core
+export InteractionHttpRuntime, VerificationConfig, localAddress,
+  newInteractionHttpRuntime, parseEd25519PublicKey, sodiumVerificationConfig,
+  sodiumVerifierEnabled
 
 when isMainModule:
   import cordnim/cli

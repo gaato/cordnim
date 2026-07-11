@@ -58,6 +58,19 @@ func decodeSignature(value: string, destination: var array[64, byte]): bool =
     destination[index] = byte((high shl 4) or low)
   true
 
+proc parseEd25519PublicKey*(value: string): array[32, byte] =
+  ## Parses the 64-character hexadecimal key shown in Discord's app settings.
+  if value.len != result.len * 2:
+    raise newException(ValueError,
+      "Discord Ed25519 public key must contain 64 hexadecimal characters")
+  for index in 0..<result.len:
+    let high = fromHexNibble(value[index * 2])
+    let low = fromHexNibble(value[index * 2 + 1])
+    if high < 0 or low < 0:
+      raise newException(ValueError,
+        "Discord Ed25519 public key contains a non-hexadecimal character")
+    result[index] = byte((high shl 4) or low)
+
 proc purgeExpired(cache: var ReplayCache, oldestAllowed: int64) =
   var stale: seq[string]
   for key, timestamp in cache.entries.pairs:

@@ -10,6 +10,10 @@ import cordnim/rest/request
 
 type RouterServices = object
 
+var cancellationProbeStarted: Atomic[bool]
+var cancellationProbeStopped: Atomic[bool]
+var invalidResponseProbeStopped: Atomic[bool]
+
 proc greet(ctx: CommandCtx[RouterServices], name: string):
     Future[CommandResult]
     {.async, discordCommand(
@@ -60,6 +64,52 @@ proc slowManual(ctx: CommandCtx[RouterServices]): Future[CommandResult]
   await sleepAsync(50.milliseconds)
   return succeeded("too late")
 
+proc contextReply(ctx: CommandCtx[RouterServices]): Future[CommandResult]
+    {.async, discordCommand(
+      name = "context_reply",
+      description = "Select a response through CommandCtx"
+    ).} =
+  await ctx.reply("selected by context")
+  await sleepAsync(5.milliseconds)
+  return succeeded("ignored compatibility result")
+
+proc contextDefer(ctx: CommandCtx[RouterServices]): Future[CommandResult]
+    {.async, discordCommand(
+      name = "context_defer",
+      description = "Wait for HTTP ACK before editing"
+    ).} =
+  await ctx.deferReply(visibility = vEphemeral)
+  await ctx.editOriginal(%*{"content": "delivered first"})
+  return succeeded("ignored compatibility result")
+
+proc cancellationProbe(ctx: CommandCtx[RouterServices]): Future[CommandResult]
+    {.async, discordCommand(
+      name = "cancellation_probe",
+      description = "Expose pre-ack cancellation cleanup",
+      ack = ackManual
+    ).} =
+  discard ctx
+  cancellationProbeStarted.store(true)
+  try:
+    await sleepAsync(30.seconds)
+  finally:
+    cancellationProbeStopped.store(true)
+  return succeeded("unreachable")
+
+proc invalidResponseProbe(ctx: CommandCtx[RouterServices]):
+    Future[CommandResult]
+    {.async, discordCommand(
+      name = "invalid_response_probe",
+      description = "Reject invalid response data before claiming the ack",
+      ack = ackManual
+    ).} =
+  try:
+    await ctx.reply(%*["not", "a", "message", "object"])
+    await sleepAsync(30.seconds)
+  finally:
+    invalidResponseProbeStopped.store(true)
+  return succeeded("unreachable")
+
 proc payload(): JsonNode =
   %*{
     "id": "100",
@@ -92,6 +142,32 @@ proc failingDeferredPayload(): JsonNode =
   result = payload()
   result["data"]["name"] = %"failing_deferred"
   result["data"]["options"] = newJArray()
+
+proc contextReplyPayload(): JsonNode =
+  result = payload()
+  result["data"]["name"] = %"context_reply"
+  result["data"]["options"] = newJArray()
+
+proc contextDeferPayload(): JsonNode =
+  result = payload()
+  result["data"]["name"] = %"context_defer"
+  result["data"]["options"] = newJArray()
+
+proc cancellationProbePayload(): JsonNode =
+  result = payload()
+  result["data"]["name"] = %"cancellation_probe"
+  result["data"]["options"] = newJArray()
+
+proc invalidResponseProbePayload(): JsonNode =
+  result = payload()
+  result["data"]["name"] = %"invalid_response_probe"
+  result["data"]["options"] = newJArray()
+
+proc jsonBytes(node: JsonNode): seq[byte] =
+  let text = $node
+  result = newSeq[byte](text.len)
+  for index, value in text:
+    result[index] = byte(ord(value))
 
 proc unknownPayload(): JsonNode =
   result = payload()
@@ -162,6 +238,38 @@ suite "shared interaction router":
     let response = waitFor scenario()
     check response["type"].getInt() == 5
     check completed.load()
+
+  test "HTTP auto-defer completion waits for confirmed socket delivery":
+    var completed: Atomic[bool]
+    completed.store(false)
+    proc sink(interaction: JsonNode,
+              commandResult: CommandResult): Future[void]
+              {.gcsafe, raises: [].} =
+      doAssert interaction{"id"}.getStr() == "100"
+      doAssert commandResult.message == "finished"
+      completed.store(true)
+      result = newFuture[void]("test.delivery-gated-completion")
+      result.complete()
+
+    proc scenario(): Future[InteractionHttpResponse] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(slow))
+      let router = newCommandRouter(application, sink)
+      let handler = router.asHttpHandler()
+      let response = await handler(slowPayload().jsonBytes(), monotonicMillis())
+      await sleepAsync(20.milliseconds)
+      doAssert not completed.load()
+      response.deliveryConfirmed()
+      await sleepAsync(5.milliseconds)
+      doAssert completed.load()
+      await router.close()
+      return response
+
+    let response = waitFor scenario()
+    var text = newString(response.body.len)
+    for index, value in response.body:
+      text[index] = char(value)
+    check parseJson(text)["type"].getInt() == 5
 
   test "auto-defer clamps itself to the remaining acknowledgement budget":
     var completed: Atomic[bool]
@@ -336,3 +444,113 @@ suite "shared interaction router":
     check invocation.target.get().kind == ctkUser
     check $invocation.target.get().targetUserId == "99"
     check invocation.resolved["users"]["99"]["username"].getStr() == "target"
+
+  test "Context selection owns the response and its CommandResult is ignored":
+    proc scenario(): Future[JsonNode] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(contextReply))
+      let router = newCommandRouter(application)
+      let response = await router.route(
+        contextReplyPayload(), monotonicMillis())
+      await sleepAsync(10.milliseconds)
+      await router.close()
+      return response
+
+    let response = waitFor scenario()
+    check response["type"].getInt() == 4
+    check response["data"]["content"].getStr() == "selected by context"
+
+  test "HTTP post-ACK work waits for the socket delivery receipt":
+    var edits: Atomic[int]
+    edits.store(0)
+    proc postAck(interaction: JsonNode,
+                 response: ContextResponse): Future[void]
+                 {.gcsafe, raises: [].} =
+      doAssert interaction{"id"}.getStr() == "100"
+      doAssert response.action == raEditOriginal
+      doAssert response.body{"content"}.getStr() == "delivered first"
+      edits.store(edits.load() + 1)
+      result = newFuture[void]("test.post-ack")
+      result.complete()
+
+    proc scenario(): Future[InteractionHttpResponse] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(contextDefer))
+      let router = newCommandRouter(application, postAckSink = postAck)
+      let handler = router.asHttpHandler()
+      let response = await handler(
+        contextDeferPayload().jsonBytes(), monotonicMillis())
+      doAssert edits.load() == 0
+      doAssert not response.deliveryConfirmed.isNil
+      response.deliveryConfirmed()
+      await sleepAsync(5.milliseconds)
+      doAssert edits.load() == 1
+      await router.close()
+      return response
+
+    let response = waitFor scenario()
+    var text = newString(response.body.len)
+    for index, value in response.body:
+      text[index] = char(value)
+    let payload = parseJson(text)
+    check payload["type"].getInt() == 5
+    check payload["data"]["flags"].getInt() == 64
+
+  test "cancelling response selection joins the unretained handler":
+    cancellationProbeStarted.store(false)
+    cancellationProbeStopped.store(false)
+
+    proc scenario(): Future[void] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp),
+        commandSet(cancellationProbe))
+      let router = newCommandRouter(application)
+      let handler = router.asHttpHandler()
+      let pending = handler(
+        cancellationProbePayload().jsonBytes(), monotonicMillis())
+      while not cancellationProbeStarted.load():
+        await sleepAsync(1.milliseconds)
+      await pending.cancelAndWait()
+      doAssert cancellationProbeStopped.load()
+      await router.close()
+
+    waitFor scenario()
+
+  test "invalid Context payload fails before consuming response authority":
+    invalidResponseProbeStopped.store(false)
+
+    proc scenario(): Future[void] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp),
+        commandSet(invalidResponseProbe))
+      let router = newCommandRouter(application)
+      let handler = router.asHttpHandler()
+      try:
+        discard await handler(
+          invalidResponseProbePayload().jsonBytes(), monotonicMillis())
+        doAssert false, "invalid response unexpectedly reached HTTP delivery"
+      except ResponseCodecError:
+        discard
+      doAssert invalidResponseProbeStopped.load()
+      await router.close()
+
+    waitFor scenario()
+
+  test "configured ingress rejects the other interaction transport":
+    let httpApp = newDiscordApp(
+      RouterServices(), initAppConfig(ingressHttp), commandSet(greet))
+    let httpRouter = newCommandRouter(httpApp)
+    proc sender(response: JsonNode): Future[void] {.gcsafe, raises: [].} =
+      discard response
+      result = newFuture[void]("test.wrong-ingress")
+      result.complete()
+    doAssertRaises ValueError:
+      waitFor httpRouter.routeGateway(payload(), monotonicMillis(), sender)
+    waitFor httpRouter.close()
+
+    let gatewayApp = newDiscordApp(
+      RouterServices(), initAppConfig(ingressGateway), commandSet(greet))
+    let gatewayRouter = newCommandRouter(gatewayApp)
+    doAssertRaises ValueError:
+      discard gatewayRouter.asHttpHandler()
+    waitFor gatewayRouter.close()

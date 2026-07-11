@@ -1,51 +1,107 @@
 {
   "items": {
-    "nim-chronos": {
+    "chronos": {
       "dir": "$deps/chronos",
       "url": "https://github.com/status-im/nim-chronos",
-      "commit": "447b3fd8ae0619e847bff46d823d56779e21851b",
+      "commit": "45f43a9ad8bd8bcf5903b42f365c1c879bd54240",
       "version": ""
     },
-    "nim-results": {
+    "results": {
       "dir": "$deps/results",
       "url": "https://github.com/arnetheduck/nim-results",
       "commit": "df8113dda4c2d74d460a8fa98252b0b771bf1f27",
       "version": ""
     },
-    "nim-bearssl": {
+    "bearssl": {
       "dir": "$deps/bearssl",
       "url": "https://github.com/status-im/nim-bearssl",
       "commit": "7c307026d4d86dc560880c6fa716f5e626ff7fc2",
       "version": ""
     },
-    "nim-stew": {
+    "websock": {
+      "dir": "$deps/websock",
+      "url": "https://github.com/status-im/nim-websock",
+      "commit": "387a8eb7e961e8fdd3b1a717d36bc53b55e4dc5d",
+      "version": ""
+    },
+    "chronicles": {
+      "dir": "$deps/chronicles",
+      "url": "https://github.com/status-im/nim-chronicles",
+      "commit": "27ec507429a4eb81edc20f28292ee8ec420be05b",
+      "version": ""
+    },
+    "stew": {
       "dir": "$deps/stew",
       "url": "https://github.com/status-im/nim-stew",
       "commit": "4382b18f04b3c43c8409bfcd6b62063773b2bbaa",
       "version": ""
     },
-    "nim-http-utils": {
+    "httputils": {
       "dir": "$deps/httputils",
       "url": "https://github.com/status-im/nim-http-utils",
       "commit": "a9ca86095e262251d8ebafa1c6504fd476c41e43",
       "version": ""
     },
-    "nim-unittest2": {
+    "unittest2": {
       "dir": "$deps/unittest2",
       "url": "https://github.com/status-im/nim-unittest2",
       "commit": "26f2ef3ae0ec72a2a75bfe557e02e88f6a31c189",
+      "version": ""
+    },
+    "nimcrypto": {
+      "dir": "$deps/nimcrypto",
+      "url": "https://github.com/cheatfate/nimcrypto",
+      "commit": "b3dbc9c4d08e58c5b7bfad6dc7ef2ee52f2f4c08",
+      "version": ""
+    },
+    "zlib": {
+      "dir": "$deps/zlib",
+      "url": "https://github.com/status-im/nim-zlib",
+      "commit": "190246aa0bb6569781370964fa2faa474203d6dd",
+      "version": ""
+    },
+    "faststreams": {
+      "dir": "$deps/faststreams",
+      "url": "https://github.com/status-im/nim-faststreams",
+      "commit": "50889cd16ec8771106cdd0eeea460039e8571e06",
+      "version": ""
+    },
+    "serialization": {
+      "dir": "$deps/serialization",
+      "url": "https://github.com/status-im/nim-serialization",
+      "commit": "4092500cea76154576539371709ae801afbd2a9d",
+      "version": ""
+    },
+    "json_serialization": {
+      "dir": "$deps/json_serialization",
+      "url": "https://github.com/status-im/nim-json-serialization",
+      "commit": "c343b0e243d9e17e2c40f3a8a24340f7c4a71d44",
+      "version": ""
+    },
+    "testutils": {
+      "dir": "$deps/testutils",
+      "url": "https://github.com/status-im/nim-testutils",
+      "commit": "74588b8b55d116ca057431ae3a0ca359e0825fcd",
       "version": ""
     }
   },
   "nimcfg": [
     "############# begin Atlas config section ##########",
     "--noNimblePath",
-    "--path:\"deps/bearssl\"",
     "--path:\"deps/chronos\"",
-    "--path:\"deps/httputils\"",
     "--path:\"deps/results\"",
+    "--path:\"deps/bearssl\"",
+    "--path:\"deps/websock\"",
     "--path:\"deps/stew\"",
-    "--path:\"deps/unittest2\"",
+    "--path:\"deps/httputils\"",
+    "--path:\"deps/nim-unittest2\"",
+    "--path:\"deps/chronicles\"",
+    "--path:\"deps/nimcrypto\"",
+    "--path:\"deps/zlib\"",
+    "--path:\"deps/faststreams\"",
+    "--path:\"deps/serialization\"",
+    "--path:\"deps/json_serialization\"",
+    "--path:\"deps/testutils\"",
     "############# end Atlas config section   ##########",
     ""
   ],
@@ -60,24 +116,40 @@
       "bin           = @[\"cordnim\"]",
       "",
       "requires \"nim >= 2.2.10 & < 2.3.0\"",
-      "requires \"chronos >= 4.0.4 & < 5.0.0\"",
+      "requires \"chronos >= 4.2.0 & < 4.4.0\"",
       "requires \"results >= 0.5.1 & < 0.6.0\"",
       "requires \"bearssl >= 0.2.11 & < 0.3.0\"",
+      "requires \"websock >= 0.4.0 & < 0.5.0\"",
+      "requires \"chronicles >= 0.10.2 & < 0.13.0\"",
       "",
       "task test, \"Run the ORC test suite\":",
-      "  exec \"nim c -r --mm:orc --nimcache:build/test-runner --path:src tests/test_all.nim\"",
+      "  exec \"nim c -r --mm:orc\" &",
+      "    \" --nimcache:build/test-runner/cache\" &",
+      "    \" --out:build/test-runner/test_all\" &",
+      "    \" --path:src tests/test_all.nim\"",
       "",
-      "task check, \"Compile the public modules without linking\":",
+      "task apiCheck, \"Compile every public entry module without linking\":",
       "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim.nim\"",
+      "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim/interactions.nim\"",
+      "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim/rest.nim\"",
+      "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim/gateway.nim\"",
+      "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim/raw.nim\"",
       "",
-      "task docs, \"Build API documentation\":",
-      "  exec \"nim doc --project --mm:orc --path:src --outdir:htmldocs src/cordnim.nim\"",
+      "task docs, \"Build documentation for every public entry module\":",
+      "  let docRoot = getPkgDir() & \"/src\"",
+      "  let docCommand = \"nim doc --project --docRoot:\\\"\" & docRoot &",
+      "    \"\\\" --mm:orc --path:src --outdir:htmldocs \"",
+      "  exec docCommand & \"src/cordnim.nim\"",
+      "  exec docCommand & \"src/cordnim/interactions.nim\"",
+      "  exec docCommand & \"src/cordnim/rest.nim\"",
+      "  exec docCommand & \"src/cordnim/gateway.nim\"",
+      "  exec docCommand & \"src/cordnim/raw.nim\"",
       "",
       "task schema, \"Regenerate the pinned Discord raw layer\":",
-      "  exec \"nim c -r --mm:orc --nimcache:build/schema --path:src tools/schema_codegen.nim\"",
+      "  exec \"nim c -r --mm:orc --nimcache:build/schema --out:build/schema_codegen --path:src tools/schema_codegen.nim\"",
       "",
       "task schemaCheck, \"Fail if committed generated sources are stale\":",
-      "  exec \"nim c -r --mm:orc --nimcache:build/schema-check --path:src tools/schema_codegen.nim -- --check\"",
+      "  exec \"nim c -r --mm:orc --nimcache:build/schema-check --out:build/schema_codegen --path:src tools/schema_codegen.nim -- --check\"",
       ""
     ]
   },

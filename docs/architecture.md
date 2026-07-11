@@ -1,61 +1,125 @@
 # Architecture
 
-cordnim deliberately separates protocol completeness from application comfort.
+cordnim separates application code, interaction delivery, REST scheduling, and
+Discord wire declarations. Importing a module does not open a socket or start a
+task.
 
-## Layers
+## Public facade
 
-`cordnim/raw` mirrors Discord's wire contract. It preserves unknown enum values,
-flag bits, and fields and exposes every pinned stable HTTP route. A generic raw
-request is available when Discord ships a field before cordnim's next release.
+The main `cordnim` module exports:
 
-The runtime layer owns all I/O policy: REST buckets and retries, interaction
-acknowledgement deadlines, Gateway sessions and shards, cache policy, structured
-task lifetimes, and Voice transport. Application handlers do not implement their
-own rate limit or reconnection loops.
+- typed identifiers, permissions, optional fields, open values, and redacted
+  secrets;
+- application composition, command declarations, middleware, and manifests;
+- component builders, validation, forms, and signed route codecs;
+- HTTP verification configuration and the webhook-only runtime factory.
 
-`cordnim/app` is the high-level entry point. It combines explicit command sets,
-Components V2, forms, typed services, middleware, observability, and test
-drivers. Dropping to a lower layer is always explicit and supported.
+Use explicit imports for `cordnim/interactions`, `cordnim/rest`,
+`cordnim/gateway`, and `cordnim/raw`. This keeps responder internals, scheduler
+controls, and generated wire names out of application handlers.
 
-## Interaction ingress
+## Application ownership
 
-Discord delivers interactions to an application through one configured ingress:
-HTTP outgoing webhooks or the Gateway. `InteractionIngress` models that choice.
-Other Gateway subscriptions remain independent, so an HTTP interaction app can
-still consume Guild, Voice, or Message events.
+`DiscordApp[S]` owns one allocation containing the service value, plus the
+command registry, middleware chain, and transport lifecycle. Middleware gets a
+reference to that allocation. `CommandCtx[S]` keeps the same reference and
+borrows its value through `ctx.services`; it does not copy `S`. The response
+context contains only the interaction exchange.
+
+The app stores one task for startup, waiting, and shutdown. Concurrent callers
+share those tasks. Shutdown cancels and joins startup or wait work before it
+calls the close hook. A failed close leaves the app in `alsClosing`; another
+`close` call retries the idempotent hook.
+
+`AppConfig` chooses one interaction ingress. `CommandRouter.asHttpHandler`
+accepts `ingressHttp`, while `routeGateway` accepts `ingressGateway`. Gateway
+event subscriptions remain a separate setting. The webhook-only runtime rejects
+hybrid configurations because it cannot own the missing Gateway event session.
+
+## Interaction exchange
+
+`InteractionExchange` owns the atomic responder, selected initial response,
+delivery receipt, post-acknowledgement port, and follow-up budget for one
+interaction.
+
+HTTP requires two phases:
+
+1. A handler, result fallback, or auto-defer claims the responder and selects
+   the callback body.
+2. `InteractionHttpServer` commits the claim after Chronos completes the socket
+   write. A failed or cancelled write marks delivery unknown.
+
+`ctx.editOriginal` and `ctx.followup` wait for phase 2. A user-install follow-up
+reservation uses an atomic counter. The exchange keeps the reservation after an
+ambiguous POST because restoring it could exceed Discord's limit.
+
+Gateway interaction ingress uses the same exchange. The callback sender
+confirms delivery after its REST request succeeds.
+
+Command handlers may return `CommandResult` or select a response through
+`CommandCtx`. A selected context response owns wire output. Router-generated
+auto-defer continues to use the returned result for the original-message edit.
+
+## Webhook-only runtime
+
+`newInteractionHttpRuntime` binds these resources to one app lifecycle:
+
+- the verified Chronos interaction server;
+- a command router and its background task scope;
+- a webhook REST scheduler and HTTP connection pool.
+
+The runtime starts the REST worker before accepting requests. Shutdown closes
+the listener, joins router tasks, stops REST work, and closes pooled
+connections.
+
+## REST and raw HTTP
+
+`cordnim/rest` provides one Chronos scheduler for Discord buckets, priorities,
+deadlines, cancellation groups, and retry policy. The HTTP transport requires
+HTTPS for external origins and permits plain HTTP only for loopback tests.
+Checked helpers convert non-2xx replies into typed errors without placing
+response bodies or token-bearing URLs in diagnostics.
+
+`cordnim/raw` comes from a pinned Discord HTTP v10 snapshot. Generated objects
+retain unknown fields, enum values, and flag bits. Route metadata and the generic
+request constructor cover operations that lack a high-level wrapper.
+
+The multipart module models bounded upload streams and attachment plans. The
+0.1 HTTP transport does not write multipart bodies.
+
+## Gateway boundary
+
+`cordnim/gateway` includes an injectable transport contract and a Chronos
+adapter over Status `websock`. The adapter preserves text and binary messages,
+fragmented-message bounds, cancellation, TLS hostname verification, and exact
+close code and reason data.
+
+The pinned `websock` 0.4 source has close-frame parsing defects. `config.nims`
+replaces that one module with the MIT-licensed copy under
+`vendor/patches/websock/`. Wire tests cover Discord close codes, UTF-8 reasons,
+empty close payloads, forbidden code 1015, and a close control frame inserted
+inside a fragmented text message. Remove the replacement after Atlas pins an
+upstream release with the same fixes.
+
+`GatewayTransport` permits one active receive and owns all active sends.
+`closeWait` cancels and joins active I/O before the driver can start a close
+handshake. A send-close race aborts the connection, so a queued or partially
+written message cannot report successful delivery.
+
+Payload codecs and state machines cover HELLO, heartbeat, IDENTIFY, RESUME,
+session cursors, close policy, identify budgets, shard plans, and dispatch
+queues. The 0.1 package has no owner that joins those pieces into a running
+shard loop.
+
+## Voice boundary
+
+The separate `cordnim_voice` package contains Voice Gateway v8 codecs, DAVE
+state, and an optional binding to the official `libdave` C API. It has no UDP
+transport, Opus pipeline, jitter buffer, mixer, or media scheduler.
 
 ## Compatibility
 
-The high-level package follows Semantic Versioning. Raw schema updates publish a
-separate `discordSchemaRevision`; additive Discord fields and unknown values do
-not require a high-level major release. Preview protocol shapes require an
-explicit import.
-
-## Ownership
-
-Resource owners such as upload streams, Voice packets, and session leases use
-destructors and sink parameters at synchronous boundaries. Interaction response
-correctness does not rely on a value remaining move-only across `await`; an
-atomic runtime state machine is the final authority.
-
-## Current alpha boundary
-
-The Gateway modules currently implement typed Gateway v10 JSON payload codecs
-and deterministic protocol and supervision state. They do not yet open a
-WebSocket. This lets payload round trips, resume, close-code, heartbeat,
-IDENTIFY-budget, queue, and shard rules be tested without making an unfinished
-transport look production-ready.
-
-Command routing decodes user and message context-menu targets into typed
-snowflakes. Persistent component interactions have a typed, versioned, signed
-router that can recover actions after a process restart. Component auto-defer,
-autocomplete routing, and modal-submit orchestration are not yet complete.
-
-The optional Voice package follows the same boundary. Voice Gateway v8 payloads,
-DAVE transitions, and the official libdave C ABI are present. UDP, Opus, jitter,
-mixing, and media scheduling remain separate work. No DAVE cryptography is
-implemented in Nim.
-
-The REST transport is operational for JSON requests. `UploadStream` and
-attachment edit planning already enforce move-only ownership and bounded reads;
-the Chronos multipart writer that connects those streams to HTTP is not complete.
+The package version tracks the application API. Generated raw declarations
+carry `discordSchemaRevision`, which records the pinned Discord specification
+snapshot. Applications that use raw declarations should record both values in
+their compatibility checks.

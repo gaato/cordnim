@@ -1,0 +1,112 @@
+## Response capability supplied to one application-command handler.
+##
+## Application services and invocation data belong to `CommandCtx`. This
+## object contains only the ingress-owned interaction exchange, so copying a
+## command context cannot create a second response authority.
+
+import std/json
+
+import chronos
+
+import cordnim/interactions/[exchange, responder, response_codec]
+
+export exchange
+
+type
+  Context* = ref object ## Narrow response capability for one interaction.
+    exchangeValue: InteractionExchange
+
+  ContextResponseError* = InteractionExchangeError
+    ## Compatibility name for invalid response-state transitions.
+
+proc newContext*(exchange: InteractionExchange): Context =
+  ## Creates a response capability around an ingress-owned exchange.
+  if exchange.isNil:
+    raise newException(ValueError, "interaction exchange is required")
+  Context(exchangeValue: exchange)
+
+func interactionType*(context: Context): InteractionType =
+  ## Returns the Discord interaction class handled by this context.
+  if context.isNil:
+    raise newException(InteractionExchangeError,
+      "interaction response context is unavailable")
+  context.exchangeValue.interactionType
+
+proc responseState*(context: Context): InteractionResponseState =
+  ## Loads the authoritative initial-response state.
+  if context.isNil:
+    raise newException(InteractionExchangeError,
+      "interaction response context is unavailable")
+  context.exchangeValue.responseState()
+
+proc selectInitial(context: Context, action: ResponseAction,
+                   responseKind: InitialResponseKind, body: sink JsonNode,
+                   visibility: Visibility): Future[void] {.async.} =
+  if context.isNil:
+    raise newException(InteractionExchangeError,
+      "interaction response context is unavailable")
+  let exchange = context.exchangeValue
+  let response = ContextResponse(
+    action: action,
+    visibility: exchange.effectiveVisibility(visibility),
+    body: body
+  )
+  response.validateInitialResponse()
+  exchange.selectInitial(response, responseKind)
+
+proc reply*(context: Context, body: sink JsonNode,
+            visibility = vPublic): Future[void] =
+  ## Selects the one immediate initial message response.
+  ##
+  ## Completion means selection succeeded; ingress confirms delivery later.
+  context.selectInitial(raReply, irkMessage, body, visibility)
+
+proc reply*(context: Context, content: string,
+            visibility = vPublic): Future[void] =
+  ## Selects a plain-content initial message response.
+  context.reply(%*{"content": content}, visibility)
+
+proc deferReply*(context: Context, visibility = vPublic,
+                 update = false): Future[void] =
+  ## Selects a deferred response so later edits or follow-ups are legal.
+  context.selectInitial(
+    if update: raDeferUpdate else: raDefer,
+    if update: irkDeferredUpdate else: irkDeferredMessage,
+    newJNull(),
+    visibility
+  )
+
+proc updateMessage*(context: Context, body: sink JsonNode): Future[void] =
+  ## Selects an immediate component-message update.
+  context.selectInitial(raUpdateMessage, irkUpdateMessage, body, vPublic)
+
+proc showModal*(context: Context, body: sink JsonNode): Future[void] =
+  ## Selects a modal as the initial response.
+  context.selectInitial(raModal, irkModal, body, vPublic)
+
+proc sendAfterAck(context: Context, action: ResponseAction,
+                  body: sink JsonNode,
+                  visibility: Visibility): Future[void] {.async.} =
+  if context.isNil:
+    raise newException(InteractionExchangeError,
+      "interaction response context is unavailable")
+  let exchange = context.exchangeValue
+  await exchange.sendAfterDelivery(ContextResponse(
+    action: action,
+    visibility: exchange.effectiveVisibility(visibility),
+    body: body
+  ))
+
+proc editOriginal*(context: Context, body: sink JsonNode): Future[void] =
+  ## Waits for confirmed initial delivery, then edits the original response.
+  context.sendAfterAck(raEditOriginal, body, vPublic)
+
+proc followup*(context: Context, body: sink JsonNode,
+               visibility = vPublic): Future[void] =
+  ## Waits for confirmed initial delivery, then sends a follow-up.
+  context.sendAfterAck(raFollowup, body, visibility)
+
+proc followup*(context: Context, content: string,
+               visibility = vPublic): Future[void] =
+  ## Sends a plain-content follow-up after confirmed initial delivery.
+  context.followup(%*{"content": content}, visibility)

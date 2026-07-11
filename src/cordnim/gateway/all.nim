@@ -9,7 +9,9 @@ import ./[
   session,
   sharding,
   supervisor,
+  transport,
+  websocket_chronos,
 ]
 
 export close_policy, dispatch, identify, opcodes, payloads, session, sharding,
-  supervisor
+  supervisor, transport, websocket_chronos

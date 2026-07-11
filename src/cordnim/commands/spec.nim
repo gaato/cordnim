@@ -7,8 +7,12 @@
 import std/[json, options]
 import chronos
 
+import cordnim/app/context as appcontext
 import cordnim/core/[bits, ids, permissions]
 import cordnim/interactions/context
+import cordnim/interactions/responder
+
+export Visibility, InteractionResponseState
 
 type
   CommandKind* = enum ## Discord application command kinds.
@@ -40,9 +44,7 @@ type
   CommandAckKind* = enum ## Initial-response policy generated into command
                          ## metadata.
     ackManual, ## The handler must acknowledge the interaction itself.
-    ackAutoDefer, ## The runtime may create a deferred message response.
-    ackAutoDeferUpdate ## The runtime may defer an update to an existing
-                       ## message.
+    ackAutoDefer ## The runtime may create a deferred message response.
 
   CommandChoice* = object ## One statically generated Discord option choice.
     name*: string ## User-facing choice name.
@@ -106,54 +108,137 @@ type
 
   CommandCtx*[S] = object ## Typed command context supplied to generated
                           ## handlers.
-    services*: S ## Application-owned dependency container.
-    invocation*: CommandInvocation ## Original transport-neutral invocation.
+    serviceValue: ref S
+    responseContextValue: appcontext.Context
+    invocationValue: CommandInvocation
 
   CommandHandler*[S] = proc (
-      services: S;
+      services: ref S;
+      context: appcontext.Context;
       invocation: CommandInvocation
     ): Future[CommandResult] {.closure.} ## Type-erased Chronos adapter
                                         ## generated from a typed command
                                         ## procedure.
+    ##
+    ## Once a handler selects an initial response through `context`, ingress
+    ## treats that response as authoritative and ignores its `CommandResult`.
+
+  CommandResponseUnavailableError* = object of CatchableError
+    ## A result-only dispatch attempted response transport I/O.
 
   CommandSet*[S] = object ## Explicit registry produced by `commandSet`.
     schemas: seq[CommandSpec]
     handlers: seq[CommandHandler[S]]
 
+proc initCommandCtx*[S](services: ref S, context: appcontext.Context,
+                        invocation: sink CommandInvocation): CommandCtx[S] =
+  ## Creates a generated-handler view over one app-owned service allocation.
+  if services.isNil:
+    raise newException(ValueError, "command services are unavailable")
+  CommandCtx[S](
+    serviceValue: services,
+    responseContextValue: context,
+    invocationValue: invocation
+  )
+
+func responseContext*[S](context: CommandCtx[S]): appcontext.Context =
+  ## Returns the ingress-owned response-capable interaction context.
+  context.responseContextValue
+
+func services*[S](context: CommandCtx[S]): lent S =
+  ## Borrows the application dependency container.
+  context.serviceValue[]
+
+func invocation*[S](context: CommandCtx[S]): lent CommandInvocation =
+  ## Borrows the transport-neutral command invocation.
+  context.invocationValue
+
+proc responseState*[S](context: CommandCtx[S]): InteractionResponseState =
+  ## Loads the authoritative initial-response state.
+  if context.responseContextValue.isNil:
+    raise newException(CommandResponseUnavailableError,
+      "result-only command dispatch cannot inspect interaction responses")
+  context.responseContextValue.responseState()
+
+func requireResponseContext[S](context: CommandCtx[S]): appcontext.Context =
+  if context.responseContextValue.isNil:
+    raise newException(CommandResponseUnavailableError,
+      "result-only command dispatch cannot send interaction responses")
+  context.responseContextValue
+
+proc reply*[S](context: CommandCtx[S], body: sink JsonNode,
+               visibility = vPublic): Future[void] =
+  ## Selects an immediate initial message; ingress confirms delivery later.
+  appcontext.reply(context.requireResponseContext(), body, visibility)
+
+proc reply*[S](context: CommandCtx[S], content: string,
+               visibility = vPublic): Future[void] =
+  ## Selects a plain-content initial message; ingress confirms delivery later.
+  appcontext.reply(context.requireResponseContext(), content, visibility)
+
+proc deferReply*[S](context: CommandCtx[S],
+                    visibility = vPublic): Future[void] =
+  ## Selects a deferred response; ingress confirms delivery later.
+  appcontext.deferReply(context.requireResponseContext(), visibility)
+
+proc updateMessage*[S](context: CommandCtx[S], body: sink JsonNode):
+    Future[void] =
+  ## Selects an immediate component-message update for later delivery.
+  appcontext.updateMessage(context.requireResponseContext(), body)
+
+proc showModal*[S](context: CommandCtx[S], body: sink JsonNode): Future[void] =
+  ## Selects a modal as the initial response for later delivery.
+  appcontext.showModal(context.requireResponseContext(), body)
+
+proc editOriginal*[S](context: CommandCtx[S], body: sink JsonNode):
+    Future[void] =
+  ## Edits the original response after acknowledgement.
+  appcontext.editOriginal(context.requireResponseContext(), body)
+
+proc followup*[S](context: CommandCtx[S], body: sink JsonNode,
+                  visibility = vPublic): Future[void] =
+  ## Sends a follow-up through ingress-owned transport.
+  appcontext.followup(context.requireResponseContext(), body, visibility)
+
+proc followup*[S](context: CommandCtx[S], content: string,
+                  visibility = vPublic): Future[void] =
+  ## Sends a plain-content follow-up through ingress-owned transport.
+  appcontext.followup(context.requireResponseContext(), content, visibility)
+
 func surface*[S](context: CommandCtx[S]): InteractionSurface =
   ## Returns the Discord surface where this command was invoked.
-  context.invocation.context.surface
+  context.invocationValue.context.surface
 
 func integrationOwners*[S](context: CommandCtx[S]):
     lent seq[IntegrationOwner] =
   ## Borrows the principals that authorized this application installation.
-  context.invocation.context.integrationOwners
+  context.invocationValue.context.integrationOwners
 
 func invokingUser*[S](context: CommandCtx[S]): UserId =
   ## Returns the user who invoked the command, not its installation owner.
-  context.invocation.context.invokingUserId
+  context.invocationValue.context.invokingUserId
 
 func appPermissions*[S](context: CommandCtx[S]): Permissions =
   ## Returns arbitrary-width effective application permissions.
-  context.invocation.context.appPermissions
+  context.invocationValue.context.appPermissions
 
 func responsePolicy*[S](context: CommandCtx[S]): ResponsePolicy =
   ## Returns the visibility policy derived from installation context.
-  context.invocation.context.responsePolicy
+  context.invocationValue.context.responsePolicy
 
 func targetUser*[S](context: CommandCtx[S]): Option[UserId] =
   ## Returns the selected user only for a user context-menu command.
-  if context.invocation.target.isSome and
-      context.invocation.target.get().kind == ctkUser:
-    some(context.invocation.target.get().targetUserId)
+  if context.invocationValue.target.isSome and
+      context.invocationValue.target.get().kind == ctkUser:
+    some(context.invocationValue.target.get().targetUserId)
   else:
     none(UserId)
 
 func targetMessage*[S](context: CommandCtx[S]): Option[MessageId] =
   ## Returns the selected message only for a message context-menu command.
-  if context.invocation.target.isSome and
-      context.invocation.target.get().kind == ctkMessage:
-    some(context.invocation.target.get().targetMessageId)
+  if context.invocationValue.target.isSome and
+      context.invocationValue.target.get().kind == ctkMessage:
+    some(context.invocationValue.target.get().targetMessageId)
   else:
     none(MessageId)
 
@@ -223,11 +308,39 @@ iterator items*[S](commands: CommandSet[S]): CommandSpec =
   for spec in commands.schemas:
     yield spec
 
-proc dispatch*[S](commands: CommandSet[S], services: S,
-                  invocation: CommandInvocation): Future[CommandResult] {.
-                  async.} =
-  ## Decodes options and awaits the matching generated typed adapter.
+proc dispatchWithServices*[S](commands: CommandSet[S],
+                              services: ref S,
+                              context: appcontext.Context,
+                              invocation: CommandInvocation):
+                              Future[CommandResult] {.async.} =
+  ## Dispatches with app-owned services and optional response authority.
+  ##
+  ## When a handler selects an initial response, ingress must ignore the
+  ## returned `CommandResult`; the selected exchange response owns the ACK.
+  if services.isNil:
+    raise newException(ValueError, "command services are unavailable")
   let index = commands.find(invocation.name)
   if index < 0:
     return notFound(invocation.name)
-  return await commands.handlers[index](services, invocation)
+  return await commands.handlers[index](services, context, invocation)
+
+proc dispatch*[S](commands: CommandSet[S], services: sink S,
+                  context: appcontext.Context,
+                  invocation: CommandInvocation): Future[CommandResult] {.
+                  async.} =
+  ## Dispatches directly with a service allocation owned by this operation.
+  var serviceOwner: ref S
+  new serviceOwner
+  serviceOwner[] = services
+  return await commands.dispatchWithServices(
+    serviceOwner, context, invocation)
+
+proc dispatch*[S](commands: CommandSet[S], services: sink S,
+                  invocation: CommandInvocation): Future[CommandResult] {.
+                  async.} =
+  ## Dispatches without response transport for tests and result-only callers.
+  ##
+  ## Existing handlers that only return `CommandResult` remain supported. A
+  ## handler that calls a response operation receives
+  ## `CommandResponseUnavailableError` instead of silently discarding I/O.
+  return await commands.dispatch(services, nil, invocation)

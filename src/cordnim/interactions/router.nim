@@ -8,12 +8,13 @@ import std/[json, options]
 import chronos
 
 import cordnim/[app, commands]
+import cordnim/app/context as appcontext
 import cordnim/core/[bits, ids, permissions]
 import cordnim/core/errors
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import cordnim/runtime/task_scope
-import ./[context, http_server, responder]
+import ./[context, exchange, http_server, responder, response_codec]
 
 const InitialResponseSendMarginMs = 250'i64
   # Reserve time for JSON serialization and the HTTP or Gateway write after the
@@ -41,11 +42,17 @@ type
   InitialResponseSender* = proc(response: JsonNode): Future[void]
     {.gcsafe, raises: [].} ## Sends a Gateway interaction callback response.
 
+  PostAckResponseSink* = proc(interaction: JsonNode,
+                              response: ContextResponse):
+                              Future[void]
+    {.gcsafe, raises: [].} ## Sends an edit or follow-up after acknowledgement.
+
   CommandRouter*[S] = ref object ## Shared typed command router and task owner.
-    app*: DiscordApp[S] ## Application whose registry is dispatched.
-    tasks*: TaskScope ## Deferred completion children.
-    completionSink*: DeferredCompletionSink ## Optional post-defer editor.
-    failureObserver*: DeferredFailureObserver ## Optional redacted failure hook.
+    app: DiscordApp[S]
+    tasks: TaskScope
+    completionSink: DeferredCompletionSink
+    failureObserver: DeferredFailureObserver
+    postAckSink: PostAckResponseSink
 
 proc responseData(commandResult: CommandResult): JsonNode =
   if commandResult.payload.isNil:
@@ -223,7 +230,8 @@ proc commandInvocation*(interaction: JsonNode): CommandInvocation =
 
 proc newCommandRouter*[S](app: DiscordApp[S],
                           completionSink: DeferredCompletionSink = nil,
-                          failureObserver: DeferredFailureObserver = nil):
+                          failureObserver: DeferredFailureObserver = nil,
+                          postAckSink: PostAckResponseSink = nil):
                           CommandRouter[S] =
   ## Creates a router with a structured scope for deferred commands.
   if app.isNil:
@@ -232,7 +240,8 @@ proc newCommandRouter*[S](app: DiscordApp[S],
     app: app,
     tasks: newTaskScope(),
     completionSink: completionSink,
-    failureObserver: failureObserver
+    failureObserver: failureObserver,
+    postAckSink: postAckSink
   )
 
 proc observedInteractionId(interaction: JsonNode): Option[InteractionId] =
@@ -254,6 +263,7 @@ proc reportDeferredFailure[S](router: CommandRouter[S], interaction: JsonNode,
     router.failureObserver(kind, interaction.observedInteractionId())
 
 proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
+                         exchange: InteractionExchange,
                          commandFuture: Future[CommandResult]): Future[void] {.
                          async: (raises: []).} =
   var commandResult: CommandResult
@@ -268,6 +278,10 @@ proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
   if router.completionSink.isNil:
     return
   try:
+    # A selected type-5 response is not an acknowledgement until the ingress
+    # transport confirms its write. Do not let the webhook PATCH overtake that
+    # write or run after an ambiguous delivery.
+    await exchange.deliveryReceipt()
     await router.completionSink(interaction, commandResult)
   except CancelledError:
     # Scope shutdown is an expected lifecycle event, not a handler failure.
@@ -275,93 +289,190 @@ proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
   except CatchableError:
     router.reportDeferredFailure(interaction, dfkCompletion)
 
+proc observeBackground[S](router: CommandRouter[S], interaction: JsonNode,
+                          commandFuture: Future[CommandResult]): Future[void] {.
+                          async: (raises: []).} =
+  ## Retains a handler that deliberately acknowledged before it completed.
+  try:
+    discard await commandFuture
+  except CancelledError:
+    discard
+  except CatchableError:
+    router.reportDeferredFailure(interaction, dfkHandler)
+
 func safeInitialDelay(responder: InteractionResponder,
                       now: MonoMillis): int64 =
   max(0'i64,
     responder.remainingAckMs(now) - InitialResponseSendMarginMs)
 
-proc route*[S](router: CommandRouter[S], interaction: JsonNode,
-               receivedAt: MonoMillis): Future[JsonNode] {.async.} =
-  ## Dispatches one command and applies its generated acknowledgement policy.
-  let responder = newInteractionResponder(receivedAt)
-  # Claim before decode and dispatch so handlers, timers, and fallback paths
-  # cannot acquire independent initial-response rights.
-  let claim = responder.beginInitial(monotonicMillis())
-  if not claim.ok:
-    raise newException(InteractionDecodeError,
-      "interaction acknowledgement deadline already expired")
+type SelectedInitialResponse = object
+  body: JsonNode
+  exchange: InteractionExchange
+
+proc selectCommandResult(exchange: InteractionExchange,
+                         commandResult: CommandResult) =
+  exchange.selectInitial(ContextResponse(
+    action: raReply,
+    visibility: exchange.effectiveVisibility(
+      if commandResult.kind in {crRejected, crInvalidOptions, crNotFound}:
+        vEphemeral
+      else:
+        vPublic),
+    body: commandResult.responseData()
+  ), irkMessage)
+
+proc selectedResponse(exchange: InteractionExchange):
+                      SelectedInitialResponse =
+  let response = exchange.initialResponse.read()
+  SelectedInitialResponse(
+    body: response.initialResponseJson(),
+    exchange: exchange
+  )
+
+proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
+                       receivedAt: MonoMillis):
+                       Future[SelectedInitialResponse] {.async.} =
+  ## Selects an ACK body; the ingress transport confirms delivery separately.
+  if router.isNil or router.app.isNil:
+    raise newException(ValueError, "command router is not initialized")
 
   let invocation = interaction.commandInvocation()
+  let responder = newInteractionResponder(receivedAt)
+
+  proc sendPostAck(response: ContextResponse): Future[void] {.
+      closure, gcsafe, raises: [CatchableError].} =
+    if router.postAckSink.isNil:
+      raise newException(InteractionExchangeError,
+        "post-acknowledgement response transport is not configured")
+    {.cast(gcsafe).}:
+      return router.postAckSink(interaction, response)
+
+  let exchange = newInteractionExchange(
+    ikApplicationCommand,
+    invocation.context.responsePolicy,
+    responder,
+    invocation.context.followupBudget,
+    sendPostAck
+  )
   let commandIndex = router.app.commands.find(invocation.name)
   if commandIndex < 0:
     if responder.remainingAckMs(monotonicMillis()) <=
         InitialResponseSendMarginMs:
       raise newDiscordError(InteractionExpiredError,
         "interaction not-found response send budget was exhausted")
-    discard claim.claim.commit(irkMessage)
-    return initialMessageResponse(notFound(invocation.name))
+    exchange.selectCommandResult(notFound(invocation.name))
+    return exchange.selectedResponse()
+
   let spec = router.app.commands.specs[commandIndex]
+  let context = appcontext.newContext(exchange)
+  let commandFuture = router.app.dispatch(context, invocation)
+  var commandRetained = false
+  var timer: Future[void]
 
-  let commandFuture = router.app.dispatch(invocation)
-  if spec.ack == ackManual:
-    if commandFuture.finished and
-        responder.remainingAckMs(monotonicMillis()) >
-          InitialResponseSendMarginMs:
-      let commandResult = commandFuture.read()
-      discard claim.claim.commit(irkMessage)
-      return commandResult.initialMessageResponse()
+  template retainExplicitHandler() =
+    discard router.tasks.spawn(
+      router.observeBackground(interaction, commandFuture))
+    commandRetained = true
 
-    # A finished handler still needs serialization and transport write time.
-    # Manual mode cannot defer, so work that misses that margin is cancelled.
-    let timer = sleepAsync(
-      responder.safeInitialDelay(monotonicMillis()).milliseconds)
-    let winner = await race(FutureBase(commandFuture), FutureBase(timer))
-    if winner != FutureBase(commandFuture) or
-        responder.remainingAckMs(monotonicMillis()) <=
-          InitialResponseSendMarginMs:
-      await commandFuture.cancelAndWait()
+  try:
+    if spec.ack == ackManual:
+      timer = sleepAsync(
+        responder.safeInitialDelay(monotonicMillis()).milliseconds)
+      discard await race(
+        FutureBase(commandFuture), FutureBase(exchange.initialResponse),
+        FutureBase(timer))
+
+      if exchange.initialResponse.finished:
+        let selected = exchange.selectedResponse()
+        retainExplicitHandler()
+        return selected
+
+      if commandFuture.finished and
+          responder.remainingAckMs(monotonicMillis()) >
+            InitialResponseSendMarginMs:
+        let commandResult = commandFuture.read()
+        if exchange.initialResponse.finished:
+          let selected = exchange.selectedResponse()
+          retainExplicitHandler()
+          return selected
+        exchange.selectCommandResult(commandResult)
+        return exchange.selectedResponse()
+
       raise newDiscordError(InteractionExpiredError,
         "interaction initial response send budget was exhausted")
-    await timer.cancelAndWait()
-    let commandResult = await commandFuture
-    discard claim.claim.commit(irkMessage)
-    return commandResult.initialMessageResponse()
 
-  let timerDelay = min(int64(spec.autoDeferAfterMs),
-    responder.safeInitialDelay(monotonicMillis()))
-  # Immediate response is safe only when the handler wins with write margin.
-  # A near-deadline completion defers and finishes through the webhook instead.
-  let timer = sleepAsync(timerDelay.milliseconds)
-  let winner = await race(FutureBase(commandFuture), FutureBase(timer))
-  let remaining = responder.remainingAckMs(monotonicMillis())
-  if winner == FutureBase(commandFuture) and
-      remaining > InitialResponseSendMarginMs:
-    await timer.cancelAndWait()
-    let commandResult = commandFuture.read()
-    discard claim.claim.commit(irkMessage)
-    return commandResult.initialMessageResponse()
+    let timerDelay = min(int64(spec.autoDeferAfterMs),
+      responder.safeInitialDelay(monotonicMillis()))
+    timer = sleepAsync(timerDelay.milliseconds)
+    discard await race(
+      FutureBase(commandFuture), FutureBase(exchange.initialResponse),
+      FutureBase(timer))
 
-  if winner == FutureBase(commandFuture):
-    await timer.cancelAndWait()
-  if remaining == 0:
-    if not commandFuture.finished:
+    if exchange.initialResponse.finished:
+      let selected = exchange.selectedResponse()
+      retainExplicitHandler()
+      return selected
+
+    let remaining = responder.remainingAckMs(monotonicMillis())
+    if commandFuture.finished and remaining > InitialResponseSendMarginMs:
+      let commandResult = commandFuture.read()
+      if exchange.initialResponse.finished:
+        let selected = exchange.selectedResponse()
+        retainExplicitHandler()
+        return selected
+      exchange.selectCommandResult(commandResult)
+      return exchange.selectedResponse()
+
+    if remaining == 0:
+      raise newDiscordError(InteractionExpiredError,
+        "interaction acknowledgement deadline expired before auto-defer")
+
+    try:
+      exchange.selectInitial(ContextResponse(
+        action: raDefer,
+        visibility: exchange.effectiveVisibility(
+          if spec.ephemeral: vEphemeral else: vPublic),
+        body: newJNull()
+      ), irkDeferredMessage)
+    except InteractionExchangeError:
+      # Handler and timer can become runnable in the same event-loop turn. The
+      # exchange's atomic responder decides which one selected the ACK.
+      if exchange.initialResponse.finished:
+        let selected = exchange.selectedResponse()
+        retainExplicitHandler()
+        return selected
+      raise
+
+    let selected = exchange.selectedResponse()
+    discard router.tasks.spawn(
+      router.completeDeferred(interaction, exchange, commandFuture))
+    commandRetained = true
+    return selected
+  finally:
+    # Chronos `race` deliberately leaves losing operands running. Until a
+    # handler is transferred into the router's TaskScope, this frame owns both
+    # it and the acknowledgement timer on every return, exception, and cancel.
+    if not timer.isNil:
+      await timer.cancelAndWait()
+    if not commandRetained:
       await commandFuture.cancelAndWait()
-    raise newDiscordError(InteractionExpiredError,
-      "interaction acknowledgement deadline expired before auto-defer")
 
-  discard claim.claim.commit(
-    if spec.ack == ackAutoDeferUpdate:
-      irkDeferredUpdate
-    else:
-      irkDeferredMessage
-  )
-  discard router.tasks.spawn(
-    router.completeDeferred(interaction, commandFuture)
-  )
-  deferredMessageResponse(spec.ephemeral)
+proc route*[S](router: CommandRouter[S], interaction: JsonNode,
+               receivedAt: MonoMillis): Future[JsonNode] {.async.} =
+  ## Selects and confirms a response for direct test/harness callers.
+  ##
+  ## Real HTTP ingress uses `asHttpHandler`, which confirms only after the
+  ## Chronos socket write succeeds.
+  let selected = await router.selectResponse(interaction, receivedAt)
+  selected.exchange.confirmInitialDelivery()
+  return selected.body
 
 proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
   ## Adapts the shared router to verified HTTP ingress.
+  if router.isNil or router.app.isNil or
+      router.app.config.interactionIngress != ingressHttp:
+    raise newException(ValueError,
+      "HTTP interaction handler requires HTTP interaction ingress")
   result = proc(body: seq[byte], receivedAt: MonoMillis):
       Future[InteractionHttpResponse] {.gcsafe, raises: [].} =
     proc dispatch(): Future[InteractionHttpResponse] {.async.} =
@@ -369,20 +480,32 @@ proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
       for index, value in body:
         bodyText[index] = char(value)
       let interaction = parseJson(bodyText)
-      let response =
-        if interaction.kind == JObject and interaction.hasKey("type") and
-            interaction["type"].kind == JInt and
-            interaction["type"].getInt() == 1:
-          # Discord's endpoint-validation PING is transport protocol, not an
-          # application command, and must bypass the command dispatcher.
-          %*{"type": 1}
-        else:
-          await router.route(interaction, receivedAt)
-      let serialized = $response
+      if interaction.kind == JObject and interaction.hasKey("type") and
+          interaction["type"].kind == JInt and
+          interaction["type"].getInt() == 1:
+        # Discord's endpoint-validation PING is transport protocol, not an
+        # application command, and must bypass the command dispatcher.
+        let serialized = $(%*{"type": 1})
+        var bytes = newSeq[byte](serialized.len)
+        for index, value in serialized:
+          bytes[index] = byte(ord(value))
+        return jsonInteractionResponse(bytes)
+
+      let selected = await router.selectResponse(interaction, receivedAt)
+      let serialized = $selected.body
       var bytes = newSeq[byte](serialized.len)
       for index, value in serialized:
         bytes[index] = byte(ord(value))
-      return jsonInteractionResponse(bytes)
+
+      let exchange = selected.exchange
+      proc confirmDelivery() {.closure, gcsafe, raises: [].} =
+        exchange.confirmInitialDelivery()
+      proc markDeliveryUnknown() {.closure, gcsafe, raises: [].} =
+        exchange.markInitialDeliveryUnknown()
+      return jsonInteractionResponse(
+        bytes,
+        deliveryConfirmed = confirmDelivery,
+        deliveryUnknown = markDeliveryUnknown)
     {.cast(gcsafe).}:
       return dispatch()
 
@@ -392,8 +515,20 @@ proc routeGateway*[S](router: CommandRouter[S], interaction: JsonNode,
   ## Routes the same command model through a Gateway callback sender.
   if sender.isNil:
     raise newException(ValueError, "Gateway interaction sender is required")
-  let response = await router.route(interaction, receivedAt)
-  await sender(response)
+  if router.isNil or router.app.isNil or
+      router.app.config.interactionIngress != ingressGateway:
+    raise newException(ValueError,
+      "Gateway interaction route requires Gateway interaction ingress")
+  let selected = await router.selectResponse(interaction, receivedAt)
+  try:
+    await sender(selected.body)
+    selected.exchange.confirmInitialDelivery()
+  except CancelledError:
+    selected.exchange.markInitialDeliveryUnknown()
+    raise
+  except CatchableError:
+    selected.exchange.markInitialDeliveryUnknown()
+    raise
 
 proc close*[S](router: CommandRouter[S]): Future[void] {.
                async: (raises: []).} =

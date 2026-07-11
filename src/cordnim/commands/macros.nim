@@ -7,6 +7,7 @@
 import std/[algorithm, json, macros, options, strutils, unicode]
 import chronos
 
+import cordnim/app/context
 import cordnim/core/ids
 import cordnim/core/[bits, permissions]
 import ./spec
@@ -362,23 +363,26 @@ proc decodeExpr(typeNode, node, wireNameNode: NimNode): NimNode =
 
 proc adapterExpr(command: CommandInfo): NimNode =
   let services = genSym(nskParam, "services")
+  let responseContext = genSym(nskParam, "responseContext")
   let invocation = genSym(nskParam, "invocation")
-  let context = genSym(nskLet, "context")
+  let commandContext = genSym(nskLet, "commandContext")
   let handler = command.handler
   let servicesType = command.servicesType
+  let servicesRefType = newTree(nnkRefTy, servicesType)
   let invocationType = bindSym"CommandInvocation"
   let resultType = bindSym"CommandResult"
   let futureType = newTree(nnkBracketExpr, bindSym"Future", resultType)
-  let contextType = bindSym"CommandCtx"
+  let responseContextType = bindSym"Context"
+  let initContext = bindSym"initCommandCtx"
   let invalid = bindSym"invalidOptions"
   let required = bindSym"requiredOption"
 
   var body = newStmtList()
   body.add quote do:
-    let `context` = `contextType`[`servicesType`](services: `services`,
-      invocation: `invocation`)
+    let `commandContext` = `initContext`(
+      `services`, `responseContext`, `invocation`)
 
-  var arguments = @[context]
+  var arguments = @[commandContext]
   for parameter in command.parameters:
     let local = genSym(nskLet, parameter.sourceName)
     let wireNameNode = newLit(parameter.wireName)
@@ -421,7 +425,8 @@ proc adapterExpr(command: CommandInfo): NimNode =
     body.add(newTree(nnkReturnStmt, handlerCall))
   result = newProc(
     params = [futureType,
-      newIdentDefs(services, servicesType),
+      newIdentDefs(services, servicesRefType),
+      newIdentDefs(responseContext, responseContextType),
       newIdentDefs(invocation, invocationType)],
     body = body,
     procType = nnkLambda,
@@ -434,6 +439,8 @@ macro commandSet*(handlers: varargs[typed]): untyped =
   ## services type, and return `CommandResult` or Chronos
   ## `Future[CommandResult]`. The resulting registry is sorted by command name,
   ## so manifest output does not depend on registration order.
+  ## Generated adapters combine app-owned services, the ingress response
+  ## capability, and middleware-normalized invocation in `CommandCtx[S]`.
   ##
   ## Parameters map from strings, booleans, integer ranges, floating-point
   ## values, enums, and typed user, channel, role, and attachment values.

@@ -26,6 +26,26 @@ type
     baseUrl: string
     maxResponseBodyBytes: int
 
+func loopbackHost(hostname: string): bool =
+  hostname.cmpIgnoreCase("localhost") == 0 or
+    hostname == "127.0.0.1" or hostname == "::1"
+
+proc checkedBaseUrl(value: string): string =
+  let parsed = parseUri(value)
+  if parsed.hostname.len == 0 or parsed.query.len != 0 or
+      parsed.anchor.len != 0 or parsed.username.len != 0 or
+      parsed.password.len != 0:
+    raise newException(ValueError,
+      "Discord API base URL must be an origin with an optional path")
+  if parsed.scheme == "https":
+    discard
+  elif parsed.scheme == "http" and parsed.hostname.loopbackHost:
+    discard
+  else:
+    raise newException(ValueError,
+      "Discord API base URL must use HTTPS; HTTP is limited to loopback tests")
+  value.strip(chars = {'/'})
+
 func chronosMethod(httpMethod: request.HttpMethod): chronosHttp.HttpMethod =
   case httpMethod
   of hmDelete: MethodDelete
@@ -180,14 +200,13 @@ proc newDiscordHttpTransport*(token: Secret[BotToken],
   ## Creates a TLS-verifying, connection-reusing Discord transport.
   if token.isEmpty:
     raise newException(ValueError, "Discord bot token must not be empty")
-  if not baseUrl.startsWith("https://") and not baseUrl.startsWith("http://"):
-    raise newException(ValueError, "Discord API base URL must be HTTP or HTTPS")
   if maxResponseBodyBytes <= 0:
     raise newException(ValueError, "response body limit must be positive")
+  let checkedUrl = baseUrl.checkedBaseUrl()
   DiscordHttpTransport(
     session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
     token: some(token),
-    baseUrl: baseUrl.strip(chars = {'/'}),
+    baseUrl: checkedUrl,
     maxResponseBodyBytes: maxResponseBodyBytes
   )
 
@@ -198,14 +217,13 @@ proc newWebhookHttpTransport*(baseUrl = DiscordApiBaseUrl,
   ##
   ## No Authorization header is added. The same TLS verification and response
   ## limits as the bot transport remain active.
-  if not baseUrl.startsWith("https://") and not baseUrl.startsWith("http://"):
-    raise newException(ValueError, "Discord API base URL must be HTTP or HTTPS")
   if maxResponseBodyBytes <= 0:
     raise newException(ValueError, "response body limit must be positive")
+  let checkedUrl = baseUrl.checkedBaseUrl()
   DiscordHttpTransport(
     session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
     token: none(Secret[BotToken]),
-    baseUrl: baseUrl.strip(chars = {'/'}),
+    baseUrl: checkedUrl,
     maxResponseBodyBytes: maxResponseBodyBytes
   )
 

@@ -15,10 +15,17 @@ import cordnim/rest/request
 import ./verification
 
 type
+  InteractionDeliveryCallback* = proc() {.gcsafe, raises: [].}
+    ## Records whether Discord's immediate HTTP acknowledgement was delivered.
+
   InteractionHttpResponse* = object ## Immediate Discord webhook response.
     status*: int ## HTTP status, normally 200.
     contentType*: string ## Response media type.
     body*: seq[byte] ## Serialized interaction response.
+    deliveryConfirmed*: InteractionDeliveryCallback
+      ## Called after the response write completes successfully.
+    deliveryUnknown*: InteractionDeliveryCallback
+      ## Called when a started response write has ambiguous delivery.
 
   InteractionHttpHandler* = proc(body: seq[byte],
                                   receivedAt: MonoMillis):
@@ -32,14 +39,44 @@ type
     endpointPath: string
     handler: InteractionHttpHandler
 
+  DeliveryNotifier = object
+    confirmed: InteractionDeliveryCallback
+    unknown: InteractionDeliveryCallback
+    finished: bool
+
 func jsonInteractionResponse*(body: sink seq[byte],
-                              status = 200): InteractionHttpResponse =
+                              status = 200,
+                              deliveryConfirmed: InteractionDeliveryCallback =
+                                nil,
+                              deliveryUnknown: InteractionDeliveryCallback =
+                                nil): InteractionHttpResponse =
   ## Creates a JSON response suitable for Discord's interaction callback.
   InteractionHttpResponse(
     status: status,
     contentType: "application/json",
-    body: body
+    body: body,
+    deliveryConfirmed: deliveryConfirmed,
+    deliveryUnknown: deliveryUnknown
   )
+
+func initDeliveryNotifier(response: InteractionHttpResponse):
+    DeliveryNotifier =
+  DeliveryNotifier(
+    confirmed: response.deliveryConfirmed,
+    unknown: response.deliveryUnknown
+  )
+
+proc confirm(notifier: var DeliveryNotifier) {.raises: [].} =
+  if not notifier.finished:
+    notifier.finished = true
+    if not notifier.confirmed.isNil:
+      notifier.confirmed()
+
+proc markUnknown(notifier: var DeliveryNotifier) {.raises: [].} =
+  if not notifier.finished:
+    notifier.finished = true
+    if not notifier.unknown.isNil:
+      notifier.unknown()
 
 proc respond(request: HttpRequestRef, status: HttpCode, body: seq[byte],
              contentType = "text/plain; charset=utf-8"):
@@ -87,23 +124,42 @@ proc process(server: InteractionHttpServer,
     except HttpWriteError:
       return defaultResponse()
 
-  try:
-    let response = await server.handler(body, receivedAt)
-    let responseCode = response.status.toHttpCode()
-    if responseCode.isNone:
-      return await request.respond(Http500, @[])
-    await request.respond(
-      responseCode.get(), response.body, response.contentType
-    )
-  except HttpWriteError:
-    defaultResponse()
-  except CatchableError:
+  let response =
+    try:
+      await server.handler(body, receivedAt)
+    except CancelledError:
+      raise
+    except CatchableError:
+      # Request bodies and tokens are deliberately absent from this generic
+      # error response. Observability adapters receive only correlation
+      # metadata.
+      try:
+        return await request.respond(Http500, @[])
+      except HttpWriteError:
+        return defaultResponse()
+
+  let responseCode = response.status.toHttpCode()
+  if responseCode.isNone:
     # Request bodies and tokens are deliberately absent from this generic error
     # response. Observability adapters receive only correlation metadata.
     try:
-      await request.respond(Http500, @[])
+      return await request.respond(Http500, @[])
     except HttpWriteError:
-      defaultResponse()
+      return defaultResponse()
+
+  var delivery = initDeliveryNotifier(response)
+  try:
+    let sent = await request.respond(
+      responseCode.get(), response.body, response.contentType
+    )
+    delivery.confirm()
+    return sent
+  except CancelledError:
+    delivery.markUnknown()
+    raise
+  except HttpWriteError:
+    delivery.markUnknown()
+    return defaultResponse()
 
 proc newInteractionHttpServer*(bindAddress: TransportAddress,
                                verification: VerificationConfig,
@@ -154,6 +210,13 @@ proc newInteractionHttpServer*(bindAddress: TransportAddress,
 proc start*(server: InteractionHttpServer) =
   ## Starts accepting verified Discord interaction requests.
   server.server.start()
+
+proc join*(server: InteractionHttpServer): Future[void] {.
+           async: (raises: [CancelledError, ValueError]).} =
+  ## Waits until the interaction listener is closed.
+  if server.isNil or server.server.isNil:
+    raise newException(ValueError, "interaction HTTP server is not initialized")
+  await server.server.join()
 
 proc close*(server: InteractionHttpServer): Future[void] {.
             async: (raises: []).} =

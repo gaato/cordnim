@@ -6,9 +6,11 @@ srcDir        = "src"
 bin           = @["cordnim"]
 
 requires "nim >= 2.2.10 & < 2.3.0"
-requires "chronos >= 4.0.4 & < 5.0.0"
+requires "chronos >= 4.2.0 & < 4.4.0"
 requires "results >= 0.5.1 & < 0.6.0"
 requires "bearssl >= 0.2.11 & < 0.3.0"
+requires "websock >= 0.4.0 & < 0.5.0"
+requires "chronicles >= 0.10.2 & < 0.13.0"
 
 task test, "Run the ORC test suite":
   exec "nim c -r --mm:orc" &
@@ -16,18 +18,25 @@ task test, "Run the ORC test suite":
     " --out:build/test-runner/test_all" &
     " --path:src tests/test_all.nim"
 
-task check, "Compile the public modules without linking":
+task apiCheck, "Compile every public entry module without linking":
   exec "nim check --mm:orc --nimcache:build/check --path:src src/cordnim.nim"
+  exec "nim check --mm:orc --nimcache:build/check --path:src src/cordnim/interactions.nim"
+  exec "nim check --mm:orc --nimcache:build/check --path:src src/cordnim/rest.nim"
+  exec "nim check --mm:orc --nimcache:build/check --path:src src/cordnim/gateway.nim"
+  exec "nim check --mm:orc --nimcache:build/check --path:src src/cordnim/raw.nim"
 
-task docs, "Build API documentation":
-  exec "nim doc --project --mm:orc --path:src --outdir:htmldocs src/cordnim.nim"
+task docs, "Build documentation for every public entry module":
+  let docRoot = getPkgDir() & "/src"
+  let docCommand = "nim doc --project --docRoot:\"" & docRoot &
+    "\" --mm:orc --path:src --outdir:htmldocs "
+  exec docCommand & "src/cordnim.nim"
+  exec docCommand & "src/cordnim/interactions.nim"
+  exec docCommand & "src/cordnim/rest.nim"
+  exec docCommand & "src/cordnim/gateway.nim"
+  exec docCommand & "src/cordnim/raw.nim"
 
 task schema, "Regenerate the pinned Discord raw layer":
-  exec "nim c -r --mm:orc --nimcache:build/schema/cache" &
-    " --out:build/schema/schema_codegen" &
-    " --path:src tools/schema_codegen.nim"
+  exec "nim c -r --mm:orc --nimcache:build/schema --out:build/schema_codegen --path:src tools/schema_codegen.nim"
 
 task schemaCheck, "Fail if committed generated sources are stale":
-  exec "nim c -r --mm:orc --nimcache:build/schema-check/cache" &
-    " --out:build/schema-check/schema_codegen" &
-    " --path:src tools/schema_codegen.nim -- --check"
+  exec "nim c -r --mm:orc --nimcache:build/schema-check --out:build/schema_codegen --path:src tools/schema_codegen.nim -- --check"

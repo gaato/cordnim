@@ -43,21 +43,21 @@ suite "DiscordApp":
     )
     application.use CommandMiddleware[AppServices](
       name: "outer",
-      before: proc (services: AppServices,
+      before: proc (services: ref AppServices,
                     invocation: var CommandInvocation): MiddlewareDecision =
         trace.add("outer-before")
         continueDispatch(),
-      after: proc (services: AppServices, invocation: CommandInvocation,
+      after: proc (services: ref AppServices, invocation: CommandInvocation,
                   result: var CommandResult) =
         trace.add("outer-after")
     )
     application.use CommandMiddleware[AppServices](
       name: "inner",
-      before: proc (services: AppServices,
+      before: proc (services: ref AppServices,
                     invocation: var CommandInvocation): MiddlewareDecision =
         trace.add("inner-before")
         continueDispatch(),
-      after: proc (services: AppServices, invocation: CommandInvocation,
+      after: proc (services: ref AppServices, invocation: CommandInvocation,
                   result: var CommandResult) =
         trace.add("inner-after")
     )
@@ -73,6 +73,29 @@ suite "DiscordApp":
       "outer-before", "inner-before", "inner-after", "outer-after"
     ]
 
+  test "middleware and handlers share the app-owned service allocation":
+    let application = newDiscordApp(
+      AppServices(prefix: "before "),
+      initAppConfig(ingressHttp),
+      registry
+    )
+    application.use CommandMiddleware[AppServices](
+      name: "service-update",
+      before: proc (services: ref AppServices,
+                    invocation: var CommandInvocation): MiddlewareDecision =
+        discard invocation
+        services[].prefix = "shared "
+        continueDispatch()
+    )
+
+    let result = waitFor application.dispatch(CommandInvocation(
+      name: "hello",
+      options: %*{"name": "Nim"},
+      userId: toId(UserId, 42)
+    ))
+    check result.message == "shared Nim"
+    check application.services.prefix == "shared "
+
   test "short-circuits a rejected invocation and unwinds entered middleware":
     var afterReached = false
     let application = newDiscordApp(
@@ -82,10 +105,10 @@ suite "DiscordApp":
     )
     application.use CommandMiddleware[AppServices](
       name: "policy",
-      before: proc (services: AppServices,
+      before: proc (services: ref AppServices,
                     invocation: var CommandInvocation): MiddlewareDecision =
         stopDispatch(rejected("denied")),
-      after: proc (services: AppServices, invocation: CommandInvocation,
+      after: proc (services: ref AppServices, invocation: CommandInvocation,
                   result: var CommandResult) =
         afterReached = true
     )

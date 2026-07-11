@@ -2,6 +2,9 @@ nimcache/
 nimblecache/
 htmldocs/
 build/
+/cordnim
+/tests/test_all
+/tools/schema_codegen
 deps/*
 !deps/atlas.config
 *.exe

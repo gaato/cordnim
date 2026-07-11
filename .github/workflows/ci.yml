@@ -54,8 +54,10 @@ jobs:
       - name: Replay pinned core dependencies
         run: atlas --noexec rep atlas.lock
 
-      - name: Check public core API
-        run: nim check --mm:orc --path:src src/cordnim.nim
+      - name: Check every public API entry point
+        run: |
+          nimble check -y
+          nimble apiCheck -y
 
       - name: Build command-line tools
         run: >-
@@ -64,6 +66,18 @@ jobs:
 
       - name: Run ORC tests
         run: nim c -r --mm:orc --path:src tests/test_all.nim
+
+      - name: Install libsodium runtime for verifier test
+        if: matrix.platform == 'linux-x86_64'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libsodium23
+
+      - name: Run libsodium verifier test
+        if: matrix.platform == 'linux-x86_64'
+        run: >-
+          nim c -r --mm:orc -d:cordnimSodium --path:src
+          tests/tinteraction_sodium.nim
 
       - name: Check optional Voice package without libdave
         run: nim check --mm:orc --path:voice/src voice/src/cordnim_voice.nim
@@ -126,12 +140,10 @@ jobs:
       - name: Replay pinned core dependencies
         run: atlas --noexec rep atlas.lock
 
-      # --project makes nim doc traverse exported modules instead of checking
-      # only the facade, so their comments and cross-links are rendered too.
+      # The Nimble task starts from each documented public umbrella. The main
+      # facade deliberately does not import lower-level protocol namespaces.
       - name: Generate core API documentation
-        run: >-
-          nim doc --project --mm:orc --path:src
-          --outdir:htmldocs src/cordnim.nim
+        run: nimble docs -y
 
       - name: Generate optional Voice API documentation
         run: >-

@@ -1,56 +1,50 @@
 # cordnim
 
-cordnim is a type-safe Discord application runtime for Nim 2.2. It keeps the
-complete Discord protocol reachable through `cordnim/raw`, while the higher
-layers prevent invalid interaction responses, component trees, and identifier
-mix-ups before a request is sent.
+cordnim is a typed Discord application runtime for Nim 2.2. The 0.1 release
+can run HTTP interactions end to end with Chronos. It also provides Discord
+REST scheduling, Gateway WebSocket transport, protocol codecs, and state
+machines for applications that need lower-level control.
 
-The project is interaction-first. An application can receive interactions over
-HTTP without opening a Gateway connection, subscribe to Gateway events without
-accepting interactions there, or run both transports while keeping one command
-model.
+The API remains unstable before 1.0.
 
-## Status
+## Package map
 
-The repository is in its first alpha. Public APIs can still change.
+| Import | Purpose |
+| --- | --- |
+| `cordnim` | Typed IDs and secrets, commands, components, and the webhook-only runtime |
+| `cordnim/interactions` | Interaction exchange, HTTP server, router, verification, and webhook responses |
+| `cordnim/rest` | Chronos HTTP transport, rate-limit scheduler, request deadlines, and checked errors |
+| `cordnim/gateway` | WebSocket transport plus Gateway v10 payload, session, heartbeat, identify, shard, and reconnect state |
+| `cordnim/raw` | Generated Discord HTTP v10 models, route metadata, and the generic request escape hatch |
 
-| Area | Available now | Still on the roadmap |
-| --- | --- | --- |
-| Raw HTTP | 242 pinned stable operations and 538 lossless JSON-backed schemas | Rich high-level models for every resource |
-| REST | Chronos HTTP/TLS, dynamic buckets, priorities, deadlines, bounded retries, checked errors | Streaming multipart transport integration |
-| Interactions | Signed HTTP ingress, replay protection, shared HTTP/Gateway command routing, command auto-defer, typed response capability, persistent component router | Component auto-defer, autocomplete routing, and modal-submit orchestration |
-| Commands | Typed proc compiler, option decoding, typed user/message context targets, deterministic manifest/diff/sync | Nested subcommands, localization, autocomplete transformers |
-| Components | Separate Legacy/V2 types, all current message shapes, all 10 modal field kinds, signed typed persistent routes | Stored-route adapters and collector ergonomics |
-| Gateway | Gateway v10 typed payload codecs plus session/resume, heartbeat, close, shard, identify, queue, and dispatch state machines | Supervised WebSocket/compression transport |
-| Voice | Voice Gateway v8 codecs, DAVE state, official libdave binding | UDP/media transport, Opus pipeline, mixer, FFmpeg adapter |
+Import the lower-level modules by name. Their wire types stay out of the main
+`cordnim` namespace.
 
-Unknown protocol fields, enum values, and flag bits are retained at the raw
-boundary rather than making a Discord addition a decode failure.
-
-## Package layout
-
-- `cordnim/raw` exposes the pinned Discord HTTP v10 schema and a generic request
-  escape hatch.
-- `cordnim/rest`, `cordnim/interactions`, and `cordnim/gateway` implement the
-  runtime and its deadlines, rate limits, sessions, and cancellation boundaries.
-- `cordnim/commands` and `cordnim/components` compile declarations into command
-  manifests, dispatchers, and validated Discord UI payloads.
-- `cordnim_voice` is a separate package. It binds the official `libdave` C API;
-  the core package does not install native Voice dependencies.
+The 0.1 release does not include a complete Gateway shard runner. The transport
+and state machines are present; an owner still needs to join HELLO, heartbeat,
+IDENTIFY or RESUME, compression, reconnect, and event dispatch. Voice media,
+streaming multipart uploads, and high-level wrappers for the full raw route
+inventory also remain outside this release.
 
 ## Requirements
 
 - Nim 2.2.10 or a newer 2.2 patch release
-- ORC (`--mm:orc`) for production builds
-- Chronos 4.x as the supported async runtime
+- ORC (`--mm:orc`)
+- Chronos 4.2 or 4.3
+- libsodium when building the optional HTTP verifier with
+  `-d:cordnimSodium`
 
-Dependencies are declared through Nimble and pinned for development with Atlas.
-`atlas.lock`, `deps/atlas.config`, and the generated `nim.cfg` paths are
-committed together so CI can detect dependency drift.
+Nimble declares package dependencies. `atlas.lock` pins the development
+checkouts under `deps/`.
 
-## First application
+## Run an HTTP interaction app
+
+The example reads the Discord application public key from the environment,
+binds `/interactions` on port 8080, and lets the app own startup and shutdown.
 
 ```nim
+import std/os
+
 import chronos
 import cordnim
 
@@ -62,46 +56,72 @@ proc hello(ctx: CommandCtx[Services], name: string): Future[CommandResult]
       name = "hello",
       description = "Say hello",
       installs = {guildInstall, userInstall},
-      contexts = {guildChannel, botDm, privateChannel},
-      ack = ackAutoDefer
+      contexts = {guildChannel, botDm, privateChannel}
     ).} =
-  let message = v2Message:
-    container:
-      text "## " & ctx.services.greeting & ", " & name
-      actions:
-        button "Continue", "example:continue"
-  return succeededPayload(message.toJson())
+  await ctx.reply(ctx.services.greeting & ", " & name)
+  return succeeded()
 
 let app = newDiscordApp(
   Services(greeting: "Hello"),
   initAppConfig(ingressHttp),
   commandSet(hello)
 )
+
+let publicKey = parseEd25519PublicKey(getEnv("DISCORD_PUBLIC_KEY"))
+discard newInteractionHttpRuntime(
+  app,
+  initTAddress("127.0.0.1:8080"),
+  sodiumVerificationConfig(publicKey)
+)
+
+waitFor app.run()
 ```
 
-The string `custom_id` above is suitable only for a short example. Persistent
-interfaces should use `TypedRouteCodec[T]` and `routedButton`, which authenticate
-the route, expiry, version, and typed payload and can recover it after restart.
+Build the example with the libsodium adapter enabled:
 
-Use `ingressGateway` instead of `ingressHttp` when interactions arrive through
-Gateway. The generated command and handler stay the same.
+```fish
+nim c -r --mm:orc -d:cordnimSodium bot.nim
+```
+
+`newInteractionHttpRuntime` accepts only `webhookOnly` app configurations. A
+hybrid app needs one composite lifecycle that owns both this HTTP path and its
+Gateway event session.
+
+`ctx.reply` selects the initial response. The HTTP server commits that response
+after Chronos writes it to the client. Calls to `ctx.editOriginal` and
+`ctx.followup` wait for the delivery receipt, so webhook requests cannot pass
+the initial acknowledgement.
+
+Handlers may keep returning `CommandResult` for result-based dispatch. Once a
+handler selects a response through `CommandCtx`, the selected response owns the
+wire output and the returned result becomes diagnostic data for middleware.
+
+## Components and persistent routes
+
+Components V2 builders validate and serialize message trees. Modal forms
+return a validation result that can contain more than one problem. A
+`TypedRouteCodec[T]` signs versioned, expiring `custom_id` payloads, and
+`ComponentRouter` dispatches decoded actions after a restart.
+
+Applications provide signing-key storage and durable route registration. The
+0.1 package has no database adapter or collector-style route registry.
 
 ## Operator CLI
 
-The executable is named `cordnim`, matching the package and avoiding a generic
-`discordctl` binary name.
+The `cordnim` executable supports schema inspection, offline checks, manifest
+validation, and command synchronization.
 
 ```fish
 cordnim schema
 cordnim doctor --offline
+cordnim manifest validate manifest.json
 cordnim commands diff --current current.json --desired manifest.json
 cordnim commands sync --manifest manifest.json --application 123 --dry-run
-cordnim commands sync --manifest manifest.json --application 123 --apply --yes
 ```
 
-Network command sync is a dry run unless both `--apply` and `--yes` are present.
-The CLI reads `DISCORD_BOT_TOKEN` from the environment or a literal `.env`
-assignment. It never executes `.env` as shell code. Keep the local file private:
+Command synchronization changes Discord state only when you pass both
+`--apply` and `--yes`. The CLI reads `DISCORD_BOT_TOKEN` or `DISCORD_TOKEN`
+from the environment or a literal `.env` assignment. It parses `.env` as text.
 
 ```fish
 cp .env.example .env
@@ -110,18 +130,17 @@ chmod 600 .env
 
 ## Development
 
-With dependencies installed:
+Replay the pinned dependency graph before building a fresh checkout:
 
 ```fish
 atlas --noexec rep atlas.lock
+nimble check
+nimble apiCheck
 nimble test
 nimble schemaCheck
 nimble docs
 ```
 
-Tests and doc generation use ORC. Build products belong under `build/`,
-`htmldocs/`, or the system temporary directory and are ignored by Git.
-
-See [docs/architecture.md](docs/architecture.md) for the public boundaries and
-[docs/security.md](docs/security.md) for the threat model and secret-handling
-defaults.
+See [docs/architecture.md](docs/architecture.md) for ownership boundaries and
+[docs/security.md](docs/security.md) for verification, delivery, retry, and
+credential rules.

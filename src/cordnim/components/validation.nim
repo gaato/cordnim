@@ -11,6 +11,7 @@ const
 type
   ComponentProblemKind* = enum ## Stable categories returned by validation.
     cpkTooManyComponents, ## Tree exceeds `MaxMessageComponents`.
+    cpkCycle, ## A component contains itself through one or more children.
     cpkInvalidRoot, ## Node is not legal at the message root.
     cpkInvalidChild, ## Parent-child relationship is illegal.
     cpkInvalidActionRow, ## Action row cardinality or child mix is illegal.
@@ -44,13 +45,26 @@ proc addProblem(validation: var ComponentValidation,
     message: message
   ))
 
-func countComponents*(node: ComponentNode): int =
-  ## Counts `node` and all descendants against Discord's total limit.
+proc countComponentsImpl(node: ComponentNode,
+                         visiting: var HashSet[pointer]): int =
   if node.isNil:
     return 0
+  let identity = cast[pointer](node)
+  if identity in visiting:
+    raise newException(ValueError, "component tree contains a cycle")
+  visiting.incl identity
+  defer:
+    visiting.excl identity
   result = 1
   for child in node.children:
-    result += child.countComponents()
+    result += child.countComponentsImpl(visiting)
+
+proc countComponents*(node: ComponentNode): int =
+  ## Counts `node` and all descendants against Discord's total limit.
+  ##
+  ## Raises `ValueError` if the public mutable node graph contains a cycle.
+  var visiting: HashSet[pointer]
+  node.countComponentsImpl(visiting)
 
 func isSelect(kind: MessageComponentKind): bool =
   kind in {
@@ -60,10 +74,21 @@ func isSelect(kind: MessageComponentKind): bool =
 
 proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
                   path: string, validation: var ComponentValidation,
-                  customIds: var HashSet[string]) =
+                  customIds: var HashSet[string],
+                  visiting: var HashSet[pointer], total: var int) =
   if node.isNil:
     validation.addProblem(cpkInvalidChild, path, "component node is nil")
     return
+
+  let identity = cast[pointer](node)
+  if identity in visiting:
+    validation.addProblem(cpkCycle, path,
+      "component tree contains a cycle")
+    return
+  visiting.incl identity
+  defer:
+    visiting.excl identity
+  inc total
 
   if node.customId.len > MaxCustomIdBytes:
     validation.addProblem(
@@ -257,7 +282,7 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
 
   for index, child in node.children:
     child.validateNode(some(node.kind), path & "." & $index, validation,
-      customIds)
+      customIds, visiting, total)
 
 proc validate*(draft: MessageDraft[V2]): ComponentValidation =
   ## Validates the complete V2 tree before serialization or transport.
@@ -267,17 +292,18 @@ proc validate*(draft: MessageDraft[V2]): ComponentValidation =
     mckFile, mckSeparator, mckContainer
   }
   var customIds: HashSet[string]
+  var visiting: HashSet[pointer]
   if draft.v2.children.len == 0:
     result.addProblem(cpkInvalidRoot, "$",
       "Components V2 message requires at least one component")
   for index, node in draft.v2.children:
-    total += node.countComponents()
     if node.isNil or node.kind notin legalRoots:
       result.addProblem(
         cpkInvalidRoot, $index,
         "component kind is not legal at the message root"
       )
-    node.validateNode(none(MessageComponentKind), $index, result, customIds)
+    node.validateNode(none(MessageComponentKind), $index, result, customIds,
+      visiting, total)
   if total > MaxMessageComponents:
     result.addProblem(
       cpkTooManyComponents, "$",

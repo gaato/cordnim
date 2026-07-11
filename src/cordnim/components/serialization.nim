@@ -1,6 +1,6 @@
 ## Wire serialization for validated Legacy and Components V2 messages.
 
-import std/[json, options, strutils]
+import std/[json, options, sets, strutils]
 
 import cordnim/core/ids
 import ./[model, validation]
@@ -57,10 +57,16 @@ func selectOptionJson(option: SelectOption): JsonNode =
   if option.emoji.isSome:
     result["emoji"] = option.emoji.get().emojiJson()
 
-func componentJson*(node: ComponentNode): JsonNode =
-  ## Serializes one already-validated component subtree.
+proc componentJson(node: ComponentNode,
+                   visiting: var HashSet[pointer]): JsonNode =
   if node.isNil:
     raise newException(ValueError, "cannot serialize a nil component")
+  let identity = cast[pointer](node)
+  if identity in visiting:
+    raise newException(ValueError, "component tree contains a cycle")
+  visiting.incl identity
+  defer:
+    visiting.excl identity
   result = newJObject()
   if node.kind != mckMediaItem:
     result["type"] = %node.kind.wireType()
@@ -68,7 +74,7 @@ func componentJson*(node: ComponentNode): JsonNode =
   of mckActionRow, mckContainer:
     result["components"] = newJArray()
     for child in node.children:
-      result["components"].add(child.componentJson())
+      result["components"].add(child.componentJson(visiting))
   of mckButton:
     result["style"] = %ord(node.buttonStyle)
     if node.text.len != 0:
@@ -110,9 +116,9 @@ func componentJson*(node: ComponentNode): JsonNode =
     result["components"] = newJArray()
     for child in node.children:
       if child.kind == mckTextDisplay:
-        result["components"].add(child.componentJson())
+        result["components"].add(child.componentJson(visiting))
       else:
-        result["accessory"] = child.componentJson()
+        result["accessory"] = child.componentJson(visiting)
   of mckTextDisplay:
     result["content"] = %node.text
   of mckThumbnail:
@@ -124,7 +130,7 @@ func componentJson*(node: ComponentNode): JsonNode =
   of mckMediaGallery:
     result["items"] = newJArray()
     for child in node.children:
-      result["items"].add(child.componentJson())
+      result["items"].add(child.componentJson(visiting))
   of mckMediaItem:
     result["media"] = node.url.mediaJson()
     if node.description.len != 0:
@@ -139,6 +145,7 @@ func componentJson*(node: ComponentNode): JsonNode =
     result["file"] = reference.mediaJson()
     if node.spoiler:
       result["spoiler"] = %true
+
   of mckSeparator:
     if node.spacing.isSome:
       result["spacing"] = %ord(node.spacing.get())
@@ -149,6 +156,14 @@ func componentJson*(node: ComponentNode): JsonNode =
       result["accent_color"] = %node.accentColor.get()
     if node.spoiler:
       result["spoiler"] = %true
+
+proc componentJson*(node: ComponentNode): JsonNode =
+  ## Serializes one component subtree.
+  ##
+  ## Raises `ValueError` for nil nodes or cyclic public node graphs. Complete
+  ## message drafts should be validated before serialization.
+  var visiting: HashSet[pointer]
+  node.componentJson(visiting)
 
 proc toJson*(draft: MessageDraft[V2]): JsonNode =
   ## Validates and serializes a V2 payload with the irreversible message flag.
