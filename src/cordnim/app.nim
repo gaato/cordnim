@@ -11,70 +11,74 @@ import cordnim/commands
 
 type
   InteractionIngress* = enum ## Exclusive source of Discord interactions.
-    ingressHttp,             ## Verify and receive interactions over HTTP webhooks.
-    ingressGateway           ## Receive interactions from the Gateway connection.
+    ingressHttp, ## Verify and receive interactions over HTTP webhooks.
+    ingressGateway ## Receive interactions from the Gateway connection.
 
-  GatewayIntent* = enum ## Gateway intent groups available to event subscriptions.
-    giGuilds,                ## Guild lifecycle and channel events.
-    giGuildMembers,          ## Guild member events; privileged when applicable.
-    giGuildModeration,       ## Bans and moderation-related guild events.
-    giGuildExpressions,      ## Emoji, sticker, and soundboard expression events.
-    giGuildIntegrations,     ## Guild integration events.
-    giGuildWebhooks,         ## Webhook update events.
-    giGuildInvites,          ## Invite lifecycle events.
-    giGuildVoiceStates,      ## Voice-state events required for voice connections.
-    giGuildPresences,        ## Presence events; privileged when applicable.
-    giGuildMessages,         ## Messages created in guild channels.
+  GatewayIntent* = enum ## Gateway intent groups available to event
+                        ## subscriptions.
+    giGuilds, ## Guild lifecycle and channel events.
+    giGuildMembers, ## Guild member events; privileged when applicable.
+    giGuildModeration, ## Bans and moderation-related guild events.
+    giGuildExpressions, ## Emoji, sticker, and soundboard expression events.
+    giGuildIntegrations, ## Guild integration events.
+    giGuildWebhooks, ## Webhook update events.
+    giGuildInvites, ## Invite lifecycle events.
+    giGuildVoiceStates, ## Voice-state events required for voice connections.
+    giGuildPresences, ## Presence events; privileged when applicable.
+    giGuildMessages, ## Messages created in guild channels.
     giGuildMessageReactions, ## Reactions in guild channels.
-    giGuildMessageTyping,    ## Typing events in guild channels.
-    giDirectMessages,        ## Messages created in direct messages.
+    giGuildMessageTyping, ## Typing events in guild channels.
+    giDirectMessages, ## Messages created in direct messages.
     giDirectMessageReactions, ## Reactions in direct messages.
-    giDirectMessageTyping,   ## Typing events in direct messages.
-    giMessageContent,        ## Message content fields; privileged when applicable.
-    giGuildScheduledEvents,  ## Scheduled-event lifecycle events.
-    giAutoModerationConfig,  ## Auto Moderation rule configuration events.
+    giDirectMessageTyping, ## Typing events in direct messages.
+    giMessageContent, ## Message content fields; privileged when applicable.
+    giGuildScheduledEvents, ## Scheduled-event lifecycle events.
+    giAutoModerationConfig, ## Auto Moderation rule configuration events.
     giAutoModerationExecution, ## Auto Moderation action execution events.
-    giGuildMessagePolls,     ## Poll vote events in guild channels.
-    giDirectMessagePolls     ## Poll vote events in direct messages.
+    giGuildMessagePolls, ## Poll vote events in guild channels.
+    giDirectMessagePolls ## Poll vote events in direct messages.
 
   GatewaySubscriptions* = object ## Optional non-interaction Gateway event feed.
-    enabled*: bool               ## Whether the application opens an event session.
+    enabled*: bool ## Whether the application opens an event session.
     intents*: set[GatewayIntent] ## Intents requested for subscribed events.
 
   AppMode* = enum ## Operational shape derived from ingress and event settings.
-    webhookOnly,  ## HTTP interactions without a Gateway event session.
-    gatewayOnly,  ## Gateway interaction ingress, with optional other events.
-    hybrid        ## HTTP interactions plus an independent Gateway event session.
+    webhookOnly, ## HTTP interactions without a Gateway event session.
+    gatewayOnly, ## Gateway interaction ingress, with optional other events.
+    hybrid ## HTTP interactions plus an independent Gateway event session.
 
   AppConfig* = object ## Application transport selection value.
     interactionIngress*: InteractionIngress ## Exclusive interaction source.
-    gatewayEvents*: GatewaySubscriptions    ## Independent Gateway event feed.
+    gatewayEvents*: GatewaySubscriptions ## Independent Gateway event feed.
 
   MiddlewareDecisionKind* = enum ## Result of a middleware pre-dispatch hook.
-    mdContinue,                       ## Continue to the next middleware or handler.
-    mdStop                            ## Return the supplied result immediately.
+    mdContinue, ## Continue to the next middleware or handler.
+    mdStop ## Return the supplied result immediately.
 
   MiddlewareDecision* = object ## Typed middleware pre-dispatch decision.
     kind*: MiddlewareDecisionKind ## Continue or stop classification.
-    result*: CommandResult          ## Result used only when `kind` is `mdStop`.
+    result*: CommandResult ## Result used only when `kind` is `mdStop`.
 
-  BeforeCommand*[S] = proc (services: S;
-      invocation: var CommandInvocation): MiddlewareDecision {.closure.}
-      ## Pre-dispatch hook that may normalize input or stop execution.
+  BeforeCommand*[S] = proc (
+      services: S;
+      invocation: var CommandInvocation
+    ): MiddlewareDecision {.closure.} ## Pre-dispatch hook that may normalize
+                                      ## input or stop execution.
 
   AfterCommand*[S] = proc (services: S; invocation: CommandInvocation;
-      commandResult: var CommandResult) {.closure.}
-      ## Post-dispatch hook that may annotate the transport-neutral result.
+      commandResult: var CommandResult) {.closure.} ## Post-dispatch hook that
+      ## may annotate the transport-neutral result.
 
   CommandMiddleware*[S] = object ## Named pair of command middleware hooks.
-    name*: string             ## Diagnostic middleware name.
+    name*: string ## Diagnostic middleware name.
     before*: BeforeCommand[S] ## Optional pre-dispatch hook.
-    after*: AfterCommand[S]   ## Optional post-dispatch hook.
+    after*: AfterCommand[S] ## Optional post-dispatch hook.
 
-  DiscordApp*[S] = ref object ## Long-lived application runtime with typed services.
-    services*: S              ## Application dependency container.
-    config*: AppConfig        ## Transport and event configuration.
-    commands*: CommandSet[S]  ## Explicit generated command registry.
+  DiscordApp*[S] = ref object ## Long-lived application runtime with typed
+                              ## services.
+    services*: S ## Application dependency container.
+    config*: AppConfig ## Transport and event configuration.
+    commands*: CommandSet[S] ## Explicit generated command registry.
     middleware: seq[CommandMiddleware[S]]
 
 func gatewaySubscriptions*(intents: set[GatewayIntent] = {}):
@@ -107,8 +111,10 @@ func appMode*(config: AppConfig): AppMode =
     if config.gatewayEvents.hasGatewayEvents: hybrid else: webhookOnly
 
 func requiresGatewayConnection*(config: AppConfig): bool =
-  ## Reports whether either interaction ingress or event subscriptions need Gateway.
-  config.interactionIngress == ingressGateway or config.gatewayEvents.hasGatewayEvents
+  ## Reports whether either interaction ingress or event subscriptions need
+  ## Gateway.
+  config.interactionIngress == ingressGateway or
+    config.gatewayEvents.hasGatewayEvents
 
 func continueDispatch*(): MiddlewareDecision =
   ## Creates a middleware decision that continues dispatch.
@@ -169,8 +175,9 @@ proc dispatch*[S](app: DiscordApp[S],
         after(app.services, mutableInvocation, result)
 
 type
-  AppRunBody*[S] = proc (app: DiscordApp[S]): Future[void] {.closure.}
-    ## Chronos application body executed inside the caller-owned runtime.
+  AppRunBody*[S] = proc (app: DiscordApp[S]): Future[void]
+    {.closure.} ## Chronos application body executed inside the caller-owned
+                ## runtime.
 
 proc run*[S](app: DiscordApp[S], body: AppRunBody[S]): Future[void] {.async.} =
   ## Executes an application body on Chronos without hiding its await boundary.

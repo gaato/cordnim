@@ -40,8 +40,8 @@ proc buildNode(node: NimNode, parent = ""): NimNode {.compileTime.} =
   let nested = node.childrenOf()
   let body = node.bodyIndex()
 
-  template ordinaryArgs(target: NimNode) =
-    for index in 1 ..< node.len:
+  proc ordinaryArgs(target: NimNode) =
+    for index in 1..<node.len:
       if index != body:
         target.add node[index]
 
@@ -55,7 +55,7 @@ proc buildNode(node: NimNode, parent = ""): NimNode {.compileTime.} =
       else: bindSym"container"
     result = newCall(symbol)
     for child in nested:
-      result.add child.buildNode(name)
+      result.add(child.buildNode(name))
   of "text":
     result = newCall(bindSym"textDisplay")
     ordinaryArgs(result)
@@ -94,4 +94,4 @@ macro v2Message*(body: untyped): untyped =
   let nodes = if body.kind == nnkStmtList: body else: newStmtList(body)
   for node in nodes:
     if node.kind != nnkEmpty:
-      result.add node.buildNode()
+      result.add(node.buildNode())

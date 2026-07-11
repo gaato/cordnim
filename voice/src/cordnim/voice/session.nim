@@ -4,28 +4,30 @@ import std/options
 
 type
   VoiceGatewayPhase* = enum ## Lifecycle phase of a voice gateway session.
-    voiceDisconnected,     ## Session has not started a connection flow.
-    voiceIdentifying,      ## Session is identifying a fresh connection.
-    voiceEstablished,      ## Session is ready to exchange voice messages.
-    voiceResuming,         ## Session is attempting to resume prior state.
-    voiceClosed            ## Session is closed.
+    voiceDisconnected, ## Session has not started a connection flow.
+    voiceIdentifying, ## Session is identifying a fresh connection.
+    voiceEstablished, ## Session is ready to exchange voice messages.
+    voiceResuming, ## Session is attempting to resume prior state.
+    voiceClosed ## Session is closed.
 
-  VoiceGatewaySession* = object ## Identity and acknowledgement state for a voice session.
+  VoiceGatewaySession* = object ## Voice identity and acknowledgement state.
     phase*: VoiceGatewayPhase ## Current lifecycle phase.
     serverId*: string ## Guild or call identifier supplied to the Voice Gateway.
     sessionId*: string ## Gateway session identifier used for resumption.
-    lastSequence*: Option[uint16] ## Most recently observed server sequence number.
+    lastSequence*: Option[uint16] ## Latest observed server sequence number.
 
-  VoiceHeartbeatData* = object ## Values required by a Voice Gateway v8 heartbeat.
+  VoiceHeartbeatData* = object ## Voice Gateway v8 heartbeat values.
     nonce*: int64 ## Caller-provided heartbeat nonce.
-    sequenceAck*: int32 ## Last server sequence, or `-1` before the first message.
+    sequenceAck*: int32 ## Last sequence, or `-1` before the first message.
 
   VoiceResumeData* = object ## Values required to resume a voice session.
     serverId*: string ## Guild or call identifier of the session.
     sessionId*: string ## Gateway session identifier to resume.
     sequenceAck*: int32 ## Last server sequence, or `-1` when none was observed.
 
-proc initVoiceGatewaySession*(serverId, sessionId: sink string): VoiceGatewaySession =
+proc initVoiceGatewaySession*(
+    serverId, sessionId: sink string,
+): VoiceGatewaySession =
   ## Creates a disconnected session with validated identifiers.
   ##
   ## Raises `ValueError` when either identifier is empty.
@@ -55,7 +57,8 @@ proc close*(session: var VoiceGatewaySession) {.raises: [].} =
   ## Marks `session` as closed.
   session.phase = voiceClosed
 
-proc observeSequence*(session: var VoiceGatewaySession; sequence: uint16) {.raises: [].} =
+proc observeSequence*(session: var VoiceGatewaySession; sequence: uint16) {.
+    raises: [].} =
   ## Records the sequence of the latest ordered server message.
   # Voice Gateway v8 sequence numbers wrap, so integer monotonicity is invalid.
   session.lastSequence = some(sequence)

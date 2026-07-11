@@ -3,18 +3,20 @@
 type
   CachePolicyKind* = enum ## Storage and eviction strategy for one cache domain.
     cacheDisabled, ## Do not retain entries.
-    cacheFull,     ## Retain entries until explicit deletion or clear.
-    cacheLru,      ## Enforce a count limit with least-recently-used eviction.
-    cacheTtl       ## Enforce both an age limit and a count limit.
+    cacheFull, ## Retain entries until explicit deletion or clear.
+    cacheLru, ## Enforce a count limit with least-recently-used eviction.
+    cacheTtl ## Enforce both an age limit and a count limit.
 
-  PositiveMillis* = range[1'i64 .. high(int64)] ## Positive millisecond duration accepted by cache policies.
+  PositiveMillis* = range[1'i64..high(int64)] ## Positive millisecond duration
+    ## accepted by cache policies.
 
   CachePolicy* = object ## Validated retention settings for one cache store.
     kind*: CachePolicyKind ## Storage and eviction strategy.
     maxEntries*: int ## Count limit for LRU and TTL policies; zero otherwise.
     ttlMs*: int64 ## Maximum age for TTL entries; zero otherwise.
 
-  CachePolicies* = object ## Independent retention settings for common Gateway entities.
+  CachePolicies* = object ## Independent retention settings for common Gateway
+    ## entities.
     guilds*: CachePolicy ## Guild snapshot retention.
     channels*: CachePolicy ## Channel and thread snapshot retention.
     members*: CachePolicy ## Guild-member snapshot retention.

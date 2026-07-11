@@ -7,9 +7,9 @@ import cordnim/[app, commands]
 
 type
   TestDiscordApp*[S] = ref object ## Recorder around a real typed `DiscordApp`.
-    app*: DiscordApp[S]            ## Application under test.
+    app*: DiscordApp[S] ## Application under test.
     invocations*: seq[CommandInvocation] ## Invocation history in call order.
-    results*: seq[CommandResult]          ## Result history in call order.
+    results*: seq[CommandResult] ## Result history in call order.
 
 proc testDiscordApp*[S](services: sink S, config: AppConfig,
                         commands: sink CommandSet[S]): TestDiscordApp[S] =

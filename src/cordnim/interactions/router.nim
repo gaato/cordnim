@@ -20,31 +20,30 @@ const InitialResponseSendMarginMs = 250'i64
   # router selects an initial response.
 
 type
-  InteractionDecodeError* = object of CatchableError
-    ## Raised when a verified payload lacks required command fields.
+  InteractionDecodeError* = object of CatchableError ## Raised when a verified
+    ## payload lacks required command fields.
 
   DeferredCompletionSink* = proc(interaction: JsonNode,
                                   result: CommandResult): Future[void]
-    {.gcsafe, raises: [].}
-    ## Edits the deferred original response after a command finishes.
+    {.gcsafe, raises: [].} ## Edits the deferred original response after a
+    ## command finishes.
 
-  DeferredFailureKind* = enum
-    ## Background phase that failed after an automatic defer.
-    dfkHandler,    ## The deferred command handler failed.
-    dfkCompletion  ## Editing the original deferred response failed.
+  DeferredFailureKind* = enum ## Background phase that failed after an
+    ## automatic defer.
+    dfkHandler, ## The deferred command handler failed.
+    dfkCompletion ## Editing the original deferred response failed.
 
   DeferredFailureObserver* = proc(kind: DeferredFailureKind,
                                   interactionId: Option[InteractionId])
-    {.gcsafe, raises: [].}
-    ## Receives redacted deferred-failure metadata for logs or metrics.
+    {.gcsafe, raises: [].} ## Receives redacted deferred-failure metadata for
+    ## logs or metrics.
 
   InitialResponseSender* = proc(response: JsonNode): Future[void]
-    {.gcsafe, raises: [].}
-    ## Sends a Gateway interaction callback response.
+    {.gcsafe, raises: [].} ## Sends a Gateway interaction callback response.
 
   CommandRouter*[S] = ref object ## Shared typed command router and task owner.
-    app*: DiscordApp[S]             ## Application whose registry is dispatched.
-    tasks*: TaskScope               ## Deferred completion children.
+    app*: DiscordApp[S] ## Application whose registry is dispatched.
+    tasks*: TaskScope ## Deferred completion children.
     completionSink*: DeferredCompletionSink ## Optional post-defer editor.
     failureObserver*: DeferredFailureObserver ## Optional redacted failure hook.
 
@@ -82,14 +81,13 @@ func commandOptions(data: JsonNode): JsonNode =
   if not data.hasKey("options") or data["options"].kind != JArray:
     return
   for option in data["options"]:
-    if option.kind != JObject or not option.hasKey("name"):
-      continue
-    if option.hasKey("value"):
-      result[option["name"].getStr()] = option["value"]
-    elif option.hasKey("options"):
-      # Subcommand trees are retained under their name until the command DSL
-      # grows an explicit nested-group type; silently flattening is ambiguous.
-      result[option["name"].getStr()] = option["options"]
+    if option.kind == JObject and option.hasKey("name"):
+      if option.hasKey("value"):
+        result[option["name"].getStr()] = option["value"]
+      elif option.hasKey("options"):
+        # Subcommand trees stay under their name until the command DSL grows an
+        # explicit nested-group type; silently flattening is ambiguous.
+        result[option["name"].getStr()] = option["options"]
 
 proc invokingUserId(interaction: JsonNode): UserId =
   var userIdText = ""
@@ -146,15 +144,15 @@ proc invocationContext*(interaction: JsonNode): InvocationContext =
       raise newException(InteractionDecodeError,
         "authorizing_integration_owners must be an object")
     if owners.hasKey("0") and owners["0"].kind == JString:
-      result.integrationOwners.add IntegrationOwner(
+      result.integrationOwners.add(IntegrationOwner(
         kind: iiGuildInstall,
         guildId: parseId(GuildId, owners["0"].getStr())
-      )
+      ))
     if owners.hasKey("1") and owners["1"].kind == JString:
-      result.integrationOwners.add IntegrationOwner(
+      result.integrationOwners.add(IntegrationOwner(
         kind: iiUserInstall,
         userId: parseId(UserId, owners["1"].getStr())
-      )
+      ))
 
   result.appPermissions = interaction.permissionValue("app_permissions")
   if interaction.hasKey("member") and interaction["member"].kind == JObject and
@@ -272,6 +270,7 @@ proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
   try:
     await router.completionSink(interaction, commandResult)
   except CancelledError:
+    # Scope shutdown is an expected lifecycle event, not a handler failure.
     discard
   except CatchableError:
     router.reportDeferredFailure(interaction, dfkCompletion)
@@ -285,6 +284,8 @@ proc route*[S](router: CommandRouter[S], interaction: JsonNode,
                receivedAt: MonoMillis): Future[JsonNode] {.async.} =
   ## Dispatches one command and applies its generated acknowledgement policy.
   let responder = newInteractionResponder(receivedAt)
+  # Claim before decode and dispatch so handlers, timers, and fallback paths
+  # cannot acquire independent initial-response rights.
   let claim = responder.beginInitial(monotonicMillis())
   if not claim.ok:
     raise newException(InteractionDecodeError,
@@ -310,6 +311,8 @@ proc route*[S](router: CommandRouter[S], interaction: JsonNode,
       discard claim.claim.commit(irkMessage)
       return commandResult.initialMessageResponse()
 
+    # A finished handler still needs serialization and transport write time.
+    # Manual mode cannot defer, so work that misses that margin is cancelled.
     let timer = sleepAsync(
       responder.safeInitialDelay(monotonicMillis()).milliseconds)
     let winner = await race(FutureBase(commandFuture), FutureBase(timer))
@@ -326,6 +329,8 @@ proc route*[S](router: CommandRouter[S], interaction: JsonNode,
 
   let timerDelay = min(int64(spec.autoDeferAfterMs),
     responder.safeInitialDelay(monotonicMillis()))
+  # Immediate response is safe only when the handler wins with write margin.
+  # A near-deadline completion defers and finishes through the webhook instead.
   let timer = sleepAsync(timerDelay.milliseconds)
   let winner = await race(FutureBase(commandFuture), FutureBase(timer))
   let remaining = responder.remainingAckMs(monotonicMillis())
@@ -345,7 +350,10 @@ proc route*[S](router: CommandRouter[S], interaction: JsonNode,
       "interaction acknowledgement deadline expired before auto-defer")
 
   discard claim.claim.commit(
-    if spec.ack == ackAutoDeferUpdate: irkDeferredUpdate else: irkDeferredMessage
+    if spec.ack == ackAutoDeferUpdate:
+      irkDeferredUpdate
+    else:
+      irkDeferredMessage
   )
   discard router.tasks.spawn(
     router.completeDeferred(interaction, commandFuture)

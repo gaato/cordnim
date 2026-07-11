@@ -17,7 +17,10 @@ suite "Components V2 wire serialization":
     check wire["flags"].getInt() == ComponentsV2MessageFlag
     check wire["components"][0]["type"].getInt() == 17
     check wire["components"][0]["components"][0]["type"].getInt() == 10
-    check wire["components"][0]["components"][1]["accessory"]["type"].getInt() == 11
+    check(
+      wire["components"][0]["components"][1]["accessory"]["type"]
+        .getInt() == 11
+    )
 
   test "serializes string-select options explicitly":
     let draft = v2Draft(actionRow(stringSelect(
@@ -56,9 +59,15 @@ suite "Components V2 wire serialization":
     )
     let wire = draft.toJson()
     check wire["components"][0]["accessory"]["sku_id"].getStr() == "55"
-    check wire["components"][1]["components"][0]["default_values"][0]["type"].getStr() == "channel"
+    check(
+      wire["components"][1]["components"][0]["default_values"][0]["type"]
+        .getStr() == "channel"
+    )
     check wire["components"][1]["components"][0]["channel_types"].len == 2
-    check wire["components"][2]["items"][0]["description"].getStr() == "Architecture"
+    check(
+      wire["components"][2]["items"][0]["description"].getStr() ==
+        "Architecture"
+    )
     check wire["components"][3]["spoiler"].getBool()
     check wire["components"][4]["spacing"].getInt() == 2
     check not wire["components"][4]["divider"].getBool()

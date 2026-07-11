@@ -2,37 +2,54 @@
 
 type
   MetricAttribute* = object ## One low-cardinality metric attribute.
-    key*: string            ## Attribute key.
-    value*: string          ## Redacted attribute value.
+    key*: string ## Attribute key.
+    value*: string ## Redacted attribute value.
 
-  MetricSample* = object ## One counter, gauge, or timing observation.
-    name*: string                    ## Stable library metric name.
-    value*: float64                  ## Observed numeric value.
+  MetricSample* = object ## One unaggregated counter, gauge, ratio, or timing
+    ## observation.
+    name*: string ## Stable library metric name.
+    value*: float64 ## Value in the unit documented by `name`.
     attributes*: seq[MetricAttribute] ## Low-cardinality dimensions.
 
-  MetricRecorder* = proc (sample: MetricSample) {.closure.}
-    ## Adapter implemented by an application or telemetry integration.
+  MetricRecorder* = proc (sample: MetricSample) {.closure.} ## Synchronous sink
+    ## for one observation; the adapter owns aggregation and export.
 
 const
-  interactionAckLatency* = "interaction_ack_latency" ## Initial ACK latency.
-  interactionAutoDeferTotal* = "interaction_auto_defer_total" ## Auto-defer.
-  interactionExpiredTotal* = "interaction_expired_total" ## Expired count.
-  restRequestLatency* = "rest_request_latency" ## REST request latency.
-  restBucketQueueDelay* = "rest_bucket_queue_delay" ## REST bucket queue delay.
-  rest429Total* = "rest_429_total" ## REST HTTP 429 count.
-  restRetryTotal* = "rest_retry_total" ## REST retry count.
-  gatewayHeartbeatRtt* = "gateway_heartbeat_rtt" ## Gateway heartbeat RTT.
-  gatewaySequenceLag* = "gateway_sequence_lag" ## Sequence processing lag.
-  gatewayReconnectTotal* = "gateway_reconnect_total" ## Gateway reconnect count.
-  gatewayDispatchQueueDepth* = "gateway_dispatch_queue_depth" ## Queue depth.
-  handlerDuration* = "handler_duration" ## Handler execution duration.
-  handlerQueueDepth* = "handler_queue_depth" ## Waiting handler count.
-  handlerCancelledTotal* = "handler_cancelled_total" ## Cancelled handler count.
-  cacheHitRatio* = "cache_hit_ratio" ## Cache hit ratio.
-  cacheEntries* = "cache_entries" ## Cache entry count.
-  voicePacketLoss* = "voice_packet_loss" ## Voice packet loss ratio.
-  voiceJitter* = "voice_jitter" ## Voice packet-arrival jitter.
-  voiceDecodeDelay* = "voice_decode_delay" ## Voice decode delay.
+  interactionAckLatency* = "interaction_ack_latency" ## Milliseconds from
+    ## interaction receipt to initial acknowledgement.
+  interactionAutoDeferTotal* = "interaction_auto_defer_total" ## Counter delta;
+    ## record `1` for each automatic defer.
+  interactionExpiredTotal* = "interaction_expired_total" ## Counter delta;
+    ## record `1` for each expired interaction.
+  restRequestLatency* = "rest_request_latency" ## Milliseconds for one REST
+    ## request.
+  restBucketQueueDelay* = "rest_bucket_queue_delay" ## Timing observation in
+    ## milliseconds spent waiting for a REST bucket.
+  rest429Total* = "rest_429_total" ## Counter delta; record `1` for each HTTP
+    ## 429 response.
+  restRetryTotal* = "rest_retry_total" ## Counter delta; record `1` for each
+    ## REST retry attempt.
+  gatewayHeartbeatRtt* = "gateway_heartbeat_rtt" ## Milliseconds for one
+    ## heartbeat round trip.
+  gatewaySequenceLag* = "gateway_sequence_lag" ## Gauge in Gateway sequence
+    ## positions.
+  gatewayReconnectTotal* = "gateway_reconnect_total" ## Counter delta; record
+    ## `1` for each reconnect attempt.
+  gatewayDispatchQueueDepth* = "gateway_dispatch_queue_depth" ## Gauge in
+    ## queued Gateway dispatches.
+  handlerDuration* = "handler_duration" ## Milliseconds for one handler
+    ## execution.
+  handlerQueueDepth* = "handler_queue_depth" ## Gauge in handlers waiting to
+    ## run.
+  handlerCancelledTotal* = "handler_cancelled_total" ## Counter delta; record
+    ## `1` for each cancelled handler.
+  cacheHitRatio* = "cache_hit_ratio" ## Gauge in the inclusive range
+    ## `0.0 .. 1.0`.
+  cacheEntries* = "cache_entries" ## Gauge in retained cache entries.
+  voicePacketLoss* = "voice_packet_loss" ## Gauge in the inclusive range
+    ## `0.0 .. 1.0`.
+  voiceJitter* = "voice_jitter" ## Milliseconds of packet-arrival jitter.
+  voiceDecodeDelay* = "voice_decode_delay" ## Milliseconds for audio decoding.
 
 func metricAttribute*(key, value: string): MetricAttribute =
   ## Creates one already-redacted metric attribute.
@@ -40,11 +57,12 @@ func metricAttribute*(key, value: string): MetricAttribute =
 
 func metricSample*(name: string, value: float64,
                    attributes: openArray[MetricAttribute] = []): MetricSample =
-  ## Creates a metric sample while copying the short attribute list.
+  ## Creates one observation and copies its attributes without aggregation or
+  ## validation.
   MetricSample(name: name, value: value, attributes: @attributes)
 
 proc record*(recorder: MetricRecorder, sample: sink MetricSample) =
-  ## Records a sample when an adapter is configured; nil is a no-op.
+  ## Forwards exactly one observation; a nil recorder is a no-op.
   if recorder != nil:
     recorder(sample)
 

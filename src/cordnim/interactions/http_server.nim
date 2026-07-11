@@ -16,9 +16,9 @@ import ./verification
 
 type
   InteractionHttpResponse* = object ## Immediate Discord webhook response.
-    status*: int                       ## HTTP status, normally 200.
-    contentType*: string               ## Response media type.
-    body*: seq[byte]                   ## Serialized interaction response.
+    status*: int ## HTTP status, normally 200.
+    contentType*: string ## Response media type.
+    body*: seq[byte] ## Serialized interaction response.
 
   InteractionHttpHandler* = proc(body: seq[byte],
                                   receivedAt: MonoMillis):
@@ -127,7 +127,8 @@ proc newInteractionHttpServer*(bindAddress: TransportAddress,
   if handler.isNil:
     raise newException(ValueError, "interaction HTTP handler is required")
   if endpointPath.len == 0 or endpointPath[0] != '/':
-    raise newException(ValueError, "interaction endpoint must be an absolute path")
+    raise newException(ValueError,
+      "interaction endpoint must be an absolute path")
 
   result = InteractionHttpServer(
     verification: verification,

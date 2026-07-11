@@ -21,6 +21,7 @@ func value*[T](snapshot: Snapshot[T]): lent T =
   ## Borrows the contained value without copying or permitting mutation.
   snapshot.data
 
-func isNewerThan*[T](snapshot: Snapshot[T]; revision: uint64): bool {.raises: [].} =
+func isNewerThan*[T](snapshot: Snapshot[T]; revision: uint64): bool {.
+    raises: [].} =
   ## Tests whether this snapshot was stored after `revision`.
   snapshot.revision > revision

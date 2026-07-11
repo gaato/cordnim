@@ -4,18 +4,20 @@ import std/[options, strutils]
 
 type
   HttpMethod* = enum ## HTTP methods emitted by Discord's stable OpenAPI schema.
-    httpGet = "GET",       ## Safe retrieval operation.
-    httpPost = "POST",     ## Create or action operation.
-    httpPut = "PUT",       ## Idempotent replacement operation.
-    httpPatch = "PATCH",   ## Partial update operation.
-    httpDelete = "DELETE"  ## Deletion operation.
+    httpGet = "GET", ## Safe retrieval operation.
+    httpPost = "POST", ## Create or action operation.
+    httpPut = "PUT", ## Idempotent replacement operation.
+    httpPatch = "PATCH", ## Partial update operation.
+    httpDelete = "DELETE" ## Deletion operation.
 
-  RawRoute* = object ## Operation copied from the pinned Discord OpenAPI document.
+  RawRoute* = object ## Operation copied from the pinned Discord OpenAPI
+    ## document.
     httpMethod*: HttpMethod ## HTTP method sent to Discord.
     pathTemplate*: string ## API path with `{name}` substitution markers.
     operationId*: string ## Stable OpenAPI operation identifier.
     requestSchema*: string ## Request body schema label, or empty when absent.
-    responseSchema*: string ## Successful response schema label, or empty when absent.
+    responseSchema*: string ## Successful response schema label, or empty when
+      ## absent.
     hasRequestBody*: bool ## Whether OpenAPI declares a request body.
     deprecated*: bool ## Whether OpenAPI marks the operation deprecated.
 
@@ -23,7 +25,8 @@ type
     name*: string ## Placeholder name without braces.
     value*: string ## Raw value to percent-encode into one path segment.
 
-  RawRouteError* = object of ValueError ## Missing, duplicate, or unsafe raw route input.
+  RawRouteError* = object of ValueError ## Missing, duplicate, or unsafe raw
+    ## route input.
 
 const hexDigits = "0123456789ABCDEF"
 
@@ -48,8 +51,8 @@ func encodePathSegment*(value: string): string =
     else:
       let unsigned = ord(byteValue)
       result.add '%'
-      result.add hexDigits[(unsigned shr 4) and 0x0f]
-      result.add hexDigits[unsigned and 0x0f]
+      result.add(hexDigits[(unsigned shr 4) and 0x0f])
+      result.add(hexDigits[unsigned and 0x0f])
 
 func parameterNames*(route: RawRoute): seq[string] =
   ## Returns placeholder names in path-template order.
@@ -61,7 +64,7 @@ func parameterNames*(route: RawRoute): seq[string] =
     let closing = route.pathTemplate.find('}', opening + 1)
     if closing < 0:
       break
-    result.add route.pathTemplate[opening + 1 ..< closing]
+    result.add(route.pathTemplate[opening + 1..<closing])
     cursor = closing + 1
 
 func findParameter(
@@ -81,7 +84,7 @@ func renderPath*(
   for name in route.parameterNames:
     let opening = route.pathTemplate.find('{', cursor)
     let closing = route.pathTemplate.find('}', opening + 1)
-    result.add route.pathTemplate[cursor ..< opening]
+    result.add(route.pathTemplate[cursor..<opening])
 
     var found = -1
     for index, parameter in parameters:
@@ -96,10 +99,10 @@ func renderPath*(
       raise newException(RawRouteError, "missing route parameter: " & name)
 
     used[found] = true
-    result.add encodePathSegment(parameters[found].value)
+    result.add(encodePathSegment(parameters[found].value))
     cursor = closing + 1
 
-  result.add route.pathTemplate[cursor .. ^1]
+  result.add(route.pathTemplate[cursor..^1])
   for index, parameter in parameters:
     if not used[index]:
       raise newException(
@@ -119,7 +122,7 @@ func rateLimitKey*(
   for name in route.parameterNames:
     let opening = route.pathTemplate.find('{', cursor)
     let closing = route.pathTemplate.find('}', opening + 1)
-    result.add route.pathTemplate[cursor ..< opening]
+    result.add(route.pathTemplate[cursor..<opening])
     if name in majorParameters:
       let value = findParameter(parameters, name)
       if value.isNone:
@@ -129,12 +132,12 @@ func rateLimitKey*(
         # Never put a credential into a key that may reach diagnostics.
         result.add ":webhook_token"
       else:
-        result.add encodePathSegment(value.get)
+        result.add(encodePathSegment(value.get))
     else:
       result.add ':'
       result.add name
     cursor = closing + 1
-  result.add route.pathTemplate[cursor .. ^1]
+  result.add(route.pathTemplate[cursor..^1])
 
 func majorParameterKey*(
     route: RawRoute, parameters: openArray[RawParameter] = []): string =

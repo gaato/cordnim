@@ -1,8 +1,8 @@
 ## Gateway opcode values are represented as an open integer domain.
 ## Unknown values remain inspectable instead of failing enum conversion.
 
-type GatewayOpcode* = distinct int64
-  ## Open, non-negative Gateway opcode that retains future wire values.
+type GatewayOpcode* = distinct int64 ## Open Gateway opcode retaining future
+  ## non-negative wire values.
 
 func `==`*(a, b: GatewayOpcode): bool {.borrow.}
   ## Compares raw opcode values.
@@ -14,13 +14,13 @@ const
   gatewayPresenceUpdate* = GatewayOpcode(3) ## Client presence update.
   gatewayVoiceStateUpdate* = GatewayOpcode(4) ## Client voice-state update.
   gatewayResume* = GatewayOpcode(6) ## Client session resume request.
-  gatewayReconnect* = GatewayOpcode(7) ## Server request to reconnect and resume.
+  gatewayReconnect* = GatewayOpcode(7) ## Server reconnect-and-resume request.
   gatewayRequestGuildMembers* = GatewayOpcode(8) ## Client guild-member request.
-  gatewayInvalidSession* = GatewayOpcode(9) ## Server session invalidation notice.
+  gatewayInvalidSession* = GatewayOpcode(9) ## Session invalidation notice.
   gatewayHello* = GatewayOpcode(10) ## Server heartbeat configuration.
   gatewayHeartbeatAck* = GatewayOpcode(11) ## Server heartbeat acknowledgement.
-  gatewayRequestSoundboardSounds* = GatewayOpcode(31) ## Client soundboard-sound request.
-  gatewayRequestChannelInfo* = GatewayOpcode(43) ## Client channel-information request.
+  gatewayRequestSoundboardSounds* = GatewayOpcode(31) ## Soundboard request.
+  gatewayRequestChannelInfo* = GatewayOpcode(43) ## Channel-information request.
 
 func toInt64*(opcode: GatewayOpcode): int64 {.inline, raises: [].} =
   ## Returns the raw JSON integer without narrowing future values.

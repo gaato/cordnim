@@ -3,7 +3,8 @@
 import std/[enumutils, hashes, options, typetraits]
 
 type
-  OpenEnum*[E, Raw] = object ## A wire enum value that may be newer than this library.
+  OpenEnum*[E, Raw] = object ## A wire enum value that may be newer than this
+                             ## library.
     raw*: Raw ## Exact wire value retained for round-trip encoding.
 
 iterator declaredMembers[T: enum](enumType: typedesc[T]): T =

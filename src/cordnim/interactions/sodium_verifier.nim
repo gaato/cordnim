@@ -5,8 +5,8 @@ import ./verification
 when defined(cordnimSodium):
   import ./sodium/raw
 
-const sodiumVerifierEnabled* = defined(cordnimSodium)
-  ## True when this build can load the configured libsodium library.
+const sodiumVerifierEnabled* = defined(cordnimSodium) ## True when this build
+  ## can load the configured libsodium library.
 
 proc sodiumEd25519Verifier*(publicKey, signature,
                             message: openArray[byte]): bool

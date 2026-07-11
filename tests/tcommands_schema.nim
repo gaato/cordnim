@@ -15,7 +15,7 @@ type
     prefix: string
 
 proc deploy(ctx: CommandCtx[TestServices], environment: Environment,
-            replicas: range[1 .. 20], dryRun = false,
+            replicas: range[1..20], dryRun = false,
             note: Option[string] = none(string)): CommandResult
     {.discordCommand(
       name = "deploy",
@@ -103,28 +103,37 @@ suite "command compiler":
     check result.message == "run:staging:3:false"
 
   test "reports a missing or out-of-range option without invoking handler":
-    let missing = waitFor commandsUnderTest.dispatch(TestServices(), CommandInvocation(
-      name: "deploy",
-      options: %*{"environment": "production"},
-      userId: toId(UserId, 42)
-    ))
+    let missing = waitFor commandsUnderTest.dispatch(
+      TestServices(),
+      CommandInvocation(
+        name: "deploy",
+        options: %*{"environment": "production"},
+        userId: toId(UserId, 42)
+      )
+    )
     check missing.kind == crInvalidOptions
     check "replicas" in missing.message
 
-    let outside = waitFor commandsUnderTest.dispatch(TestServices(), CommandInvocation(
-      name: "deploy",
-      options: %*{"environment": "production", "replicas": 21},
-      userId: toId(UserId, 42)
-    ))
+    let outside = waitFor commandsUnderTest.dispatch(
+      TestServices(),
+      CommandInvocation(
+        name: "deploy",
+        options: %*{"environment": "production", "replicas": 21},
+        userId: toId(UserId, 42)
+      )
+    )
     check outside.kind == crInvalidOptions
     check "outside" in outside.message
 
   test "returns an explicit not-found result":
-    let result = waitFor commandsUnderTest.dispatch(TestServices(), CommandInvocation(
-      name: "missing",
-      options: newJObject(),
-      userId: toId(UserId, 42)
-    ))
+    let result = waitFor commandsUnderTest.dispatch(
+      TestServices(),
+      CommandInvocation(
+        name: "missing",
+        options: newJObject(),
+        userId: toId(UserId, 42)
+      )
+    )
     check result.kind == crNotFound
 
   test "awaits a native Chronos command handler":

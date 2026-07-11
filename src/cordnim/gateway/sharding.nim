@@ -3,7 +3,7 @@
 import ./session
 
 type
-  ShardRange* = object ## Half-open range of shard identifiers owned by a process.
+  ShardRange* = object ## Half-open shard range owned by a process.
     first*: uint16 ## First owned shard identifier.
     lastExclusive*: uint16 ## One past the final owned shard identifier.
 
@@ -24,7 +24,10 @@ proc planShards*(
   if processCount == 0:
     raise newException(ValueError, "process count must be at least one")
   if processIndex >= processCount:
-    raise newException(ValueError, "process index must be less than process count")
+    raise newException(
+      ValueError,
+      "process index must be less than process count",
+    )
 
   let total = uint32(totalShards)
   let count = uint32(processCount)
@@ -49,7 +52,7 @@ proc planShards*(
 
 iterator shardIds*(plan: ShardPlan): ShardId =
   ## Yields every shard owned by `plan` in ascending order.
-  for value in plan.owned.first ..< plan.owned.lastExclusive:
+  for value in plan.owned.first..<plan.owned.lastExclusive:
     yield ShardId(value)
 
 func len*(range: ShardRange): int {.inline, raises: [].} =

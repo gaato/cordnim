@@ -2,11 +2,12 @@
 
 type
   FieldKind* {.pure.} = enum ## Presence state of a decoded Discord JSON field.
-    Absent,   ## The property was omitted from the payload.
+    Absent, ## The property was omitted from the payload.
     NullValue, ## The property was present with JSON `null`.
-    Present   ## The property contained a typed value.
+    Present ## The property contained a typed value.
 
-  DiscordField*[T] = object ## A field preserving omission, JSON null, and value.
+  DiscordField*[T] = object ## A field preserving omission, JSON null, and
+                            ## value.
     case kind*: FieldKind ## Presence discriminator for safe case analysis.
     of FieldKind.Present:
       value*: T ## Decoded value, available only for `Present`.
@@ -15,11 +16,13 @@ type
 
   PatchKind* {.pure.} = enum ## Intended update behavior for a Discord property.
     LeaveUnchanged, ## Omit the property from the update payload.
-    ClearValue,     ## Send JSON `null` to clear the property.
-    SetValue        ## Send a typed replacement value.
+    ClearValue, ## Send JSON `null` to clear the property.
+    SetValue ## Send a typed replacement value.
 
-  Patch*[T] = object ## An update field distinguishing no change, clear, and set.
-    case kind*: PatchKind ## Update behavior discriminator for safe case analysis.
+  Patch*[T] = object ## An update field distinguishing no change, clear, and
+                     ## set.
+    case kind*: PatchKind ## Update behavior discriminator for safe case
+                          ## analysis.
     of PatchKind.SetValue:
       value*: T ## Replacement value, available only for `SetValue`.
     of PatchKind.LeaveUnchanged, PatchKind.ClearValue:

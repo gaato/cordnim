@@ -2,7 +2,8 @@
 
 import std/json
 
-const redactedSecret* = "[REDACTED]" ## Stable replacement used by safe renderers.
+const redactedSecret* = "[REDACTED]" ## Stable replacement used by safe
+                                     ## renderers.
 
 type
   BotToken* = object ## Type marker for a Discord bot authorization token.

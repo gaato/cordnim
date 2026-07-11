@@ -61,14 +61,12 @@ proc botTokenText(): string =
   try:
     for line in lines(".env"):
       let stripped = line.strip()
-      if stripped.len == 0 or stripped[0] == '#':
-        continue
-      let separator = stripped.find('=')
-      if separator <= 0:
-        continue
-      let key = stripped[0 ..< separator].strip()
-      if key in ["DISCORD_BOT_TOKEN", "DISCORD_TOKEN"]:
-        return unquoteEnv(stripped[separator + 1 .. ^1])
+      if stripped.len > 0 and stripped[0] != '#':
+        let separator = stripped.find('=')
+        if separator > 0:
+          let key = stripped[0..<separator].strip()
+          if key in ["DISCORD_BOT_TOKEN", "DISCORD_TOKEN"]:
+            return unquoteEnv(stripped[separator + 1..^1])
   except IOError:
     discard
 
@@ -97,24 +95,23 @@ proc validateManifest(document: JsonNode): seq[string] =
       document.commandArray()
     except CliError as error:
       return @[error.msg]
-  for index in 0 ..< commands.len:
+  for index in 0..<commands.len:
     let command = commands[index]
     if command.kind != JObject:
       result.add $index & ": command must be an object"
-      continue
-    if not command.hasKey("name") or command["name"].kind != JString:
+    elif not command.hasKey("name") or command["name"].kind != JString:
       result.add $index & ": command name is required"
-      continue
-    let name = command["name"].getStr()
-    if name in names:
-      result.add $index & ": duplicate command name '" & name & "'"
-    names.incl name
-    if not command.hasKey("type") or command["type"].kind != JInt:
-      result.add name & ": numeric command type is required"
-    if command.getOrDefault("type").getInt(1) == 1 and
-        (not command.hasKey("description") or
-          command["description"].kind != JString):
-      result.add name & ": chat-input description is required"
+    else:
+      let name = command["name"].getStr()
+      if name in names:
+        result.add $index & ": duplicate command name '" & name & "'"
+      names.incl name
+      if not command.hasKey("type") or command["type"].kind != JInt:
+        result.add name & ": numeric command type is required"
+      if command.getOrDefault("type").getInt(1) == 1 and
+          (not command.hasKey("description") or
+            command["description"].kind != JString):
+        result.add name & ": chat-input description is required"
 
 proc manifestHash(document: JsonNode): string =
   var value = 14695981039346656037'u64
@@ -168,9 +165,10 @@ proc bytesToString(bytes: openArray[byte]): string =
     result[index] = char(value)
 
 proc syncParameters(options: SyncOptions): seq[raw_route.RawParameter] =
-  result.add raw_route.initRawParameter("application_id", options.applicationId)
+  result.add(
+    raw_route.initRawParameter("application_id", options.applicationId))
   if options.guildId.len != 0:
-    result.add raw_route.initRawParameter("guild_id", options.guildId)
+    result.add(raw_route.initRawParameter("guild_id", options.guildId))
 
 proc makeRawRequest(options: SyncOptions, write: bool,
                     desired: JsonNode): raw_request.RawRequest =
@@ -184,7 +182,7 @@ proc makeRawRequest(options: SyncOptions, write: bool,
     # Runtime metadata is useful in the manifest but is not part of Discord's
     # bulk-overwrite request schema.
     for command in desired.commandArray():
-      body.add command.normalizedCommand()
+      body.add(command.normalizedCommand())
   raw_request.initRawRequest(route, options.syncParameters(), body)
 
 proc performRequest(client: ChronosRestClient,
@@ -230,19 +228,23 @@ proc parseSyncOptions(arguments: seq[string]): SyncOptions =
     case arguments[index]
     of "--manifest":
       inc index
-      if index >= arguments.len: raise newException(CliError, "--manifest needs a file")
+      if index >= arguments.len:
+        raise newException(CliError, "--manifest needs a file")
       result.manifestPath = arguments[index]
     of "--current":
       inc index
-      if index >= arguments.len: raise newException(CliError, "--current needs a file")
+      if index >= arguments.len:
+        raise newException(CliError, "--current needs a file")
       result.currentPath = arguments[index]
     of "--application":
       inc index
-      if index >= arguments.len: raise newException(CliError, "--application needs an ID")
+      if index >= arguments.len:
+        raise newException(CliError, "--application needs an ID")
       result.applicationId = arguments[index]
     of "--guild":
       inc index
-      if index >= arguments.len: raise newException(CliError, "--guild needs an ID")
+      if index >= arguments.len:
+        raise newException(CliError, "--guild needs an ID")
       result.guildId = arguments[index]
     of "--apply": result.apply = true
     of "--yes": result.yes = true
@@ -273,7 +275,7 @@ proc runCli*(arguments = commandLineParams()): int =
   ## Runs the `cordnim` CLI and returns a process exit code.
   try:
     if arguments.len == 0 or arguments[0] in ["help", "--help", "-h"]:
-      stdout.write usage()
+      stdout.write(usage())
       return 0
     if arguments[0] in ["--version", "version"]:
       stdout.writeLine("cordnim " & CliVersion)
@@ -294,16 +296,18 @@ proc runCli*(arguments = commandLineParams()): int =
         $discordOperationCount & " operations)")
       stdout.writeLine("Chronos: configured")
       let tokenPresent = botTokenText().len != 0
-      stdout.writeLine("bot token: " & (if tokenPresent: "present" else: "missing"))
+      stdout.writeLine(
+        "bot token: " & (if tokenPresent: "present" else: "missing"))
       if arguments.len == 2:
         return if tokenPresent: 0 else: 1
       if not tokenPresent:
         return 1
-      let application = waitFor executeDiscordRequest(
-        raw_request.initRawRequest(getMyOauth2Application), false)
+      let application = waitFor(executeDiscordRequest(
+        raw_request.initRawRequest(getMyOauth2Application), false))
       if application.kind != JObject or not application.hasKey("id"):
         raise newException(CliError,
-          "Discord authentication succeeded but application metadata is malformed")
+          "Discord authentication succeeded but application metadata is " &
+          "malformed")
       stdout.writeLine("Discord application: " & application["id"].getStr())
       stdout.writeLine("Discord API: reachable")
       return 0
@@ -336,14 +340,15 @@ proc runCli*(arguments = commandLineParams()): int =
             inc index
             desiredPath = arguments[index]
           else:
-            raise newException(CliError, "unknown diff option: " & arguments[index])
+            raise newException(CliError,
+              "unknown diff option: " & arguments[index])
           inc index
         let changes = diffCommands(loadJson(currentPath), loadJson(desiredPath))
         for change in changes:
           stdout.writeLine(change)
         return if changes.len == 0: 0 else: 2
       if arguments[1] == "sync":
-        let options = parseSyncOptions(arguments[2 .. ^1])
+        let options = parseSyncOptions(arguments[2..^1])
         let desired = loadJson(options.manifestPath)
         let problems = desired.validateManifest()
         if problems.len != 0:
@@ -355,7 +360,7 @@ proc runCli*(arguments = commandLineParams()): int =
           if changes.len > 0:
             stdout.writeLine("Dry run: no Discord state changed.")
           return if changes.len == 0: 0 else: 2
-        let current = waitFor discordRequest(options, desired, false)
+        let current = waitFor(discordRequest(options, desired, false))
         let changes = diffCommands(current, desired)
         if changes.len == 0:
           stdout.writeLine("No command changes.")
@@ -367,10 +372,11 @@ proc runCli*(arguments = commandLineParams()): int =
           return 2
         if not options.yes:
           raise newException(CliError, "--apply also requires --yes")
-        discard waitFor discordRequest(options, desired, true)
+        discard waitFor(discordRequest(options, desired, true))
         stdout.writeLine("Discord commands synchronized.")
         return 0
-      raise newException(CliError, "unknown commands subcommand: " & arguments[1])
+      raise newException(CliError,
+        "unknown commands subcommand: " & arguments[1])
     else:
       raise newException(CliError, "unknown command: " & arguments[0])
   except CliError as error:

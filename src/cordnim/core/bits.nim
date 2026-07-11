@@ -3,7 +3,8 @@
 import std/[enumutils, hashes, strutils, typetraits]
 
 const
-  defaultMaxBitsDigits* = 1024 ## Default input bound for decimal bit fields received from Discord.
+  defaultMaxBitsDigits* = 1024 ## Default input bound for decimal bit fields
+                               ## received from Discord.
 
   halfLimbMask = 0xffff_ffff'u64
   decimalChunkBase = 1_000_000_000'u64
@@ -12,9 +13,10 @@ const
 type
   DiscordBits*[Domain] = object ## A non-negative arbitrary-width bit field.
                                 ##
-                                ## The domain parameter prevents mixing unrelated
-                                ## Discord flag sets. Storage is canonicalized, so
-                                ## unknown high bits survive decode and re-encoding.
+                                ## The domain parameter prevents mixing
+                                ## unrelated Discord flag sets. Storage is
+                                ## canonicalized, so unknown high bits survive
+                                ## decode and re-encoding.
     limbs: seq[uint64]
 
 iterator declaredMembers[T: enum](enumType: typedesc[T]): T =
@@ -188,13 +190,13 @@ proc toDecimal*[Domain](bits: DiscordBits[Domain]): string =
   var quotient = bits
   var chunks: seq[uint32]
   while not quotient.isZero:
-    chunks.add uint32(quotient.divideByDecimalChunk())
+    chunks.add(uint32(quotient.divideByDecimalChunk()))
 
   result = $chunks[^1]
   if chunks.len > 1:
     for index in countdown(chunks.high - 1, 0):
       let chunk = $chunks[index]
-      result.add repeat('0', decimalChunkDigits - chunk.len)
+      result.add(repeat('0', decimalChunkDigits - chunk.len))
       result.add chunk
 
 func `==`*[Domain](left, right: DiscordBits[Domain]): bool {.inline.} =

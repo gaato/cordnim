@@ -20,7 +20,8 @@ proc autoDeferTask*(responder: InteractionResponder,
   ## If the handler responds first, the claim loses harmlessly. A failure after
   ## claiming is marked transport-unknown so no second initial response is sent.
   if interactionType.validatePolicy(policy) != ireNone:
-    raise newException(ValueError, "acknowledgement policy is invalid for interaction type")
+    raise newException(ValueError,
+      "acknowledgement policy is invalid for interaction type")
   if policy.kind == apkManual:
     return
   if sender.isNil:

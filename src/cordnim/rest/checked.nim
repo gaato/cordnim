@@ -16,8 +16,8 @@ import ./[chronos_driver, request]
 export results
 
 type
-  RestAttempt*[T] = Result[T, ref DiscordError]
-    ## Explicit non-raising view of a checked asynchronous REST operation.
+  RestAttempt*[T] = Result[T, ref DiscordError] ## Explicit non-raising view of
+    ## a checked asynchronous REST operation.
 
 func responseHeader(headers: openArray[(string, string)],
                     name: string): Option[string] =

@@ -25,7 +25,7 @@ proc testOneInput(data: ptr UncheckedArray[byte], len: int): cint {.
   for index, value in bodyText:
     body[index] = byte(ord(value))
   var cache = initReplayCache(maxEntries = 8)
-  var config = VerificationConfig(
+  let config = VerificationConfig(
     allowedSkewSeconds: 300,
     maxBodyBytes: 1_024,
     verifier: acceptingVerifier
@@ -38,7 +38,7 @@ when defined(fuzzStandalone):
   import std/[cmdline, syncio]
 
   stderr.write "StandaloneFuzzTarget: running " & $paramCount() & " inputs\n"
-  for index in 1 .. paramCount():
+  for index in 1..paramCount():
     var buffer = readFile(paramStr(index))
     discard testOneInput(
       cast[ptr UncheckedArray[byte]](cstring(buffer)), buffer.len

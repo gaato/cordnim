@@ -7,28 +7,27 @@
 import std/[options, strutils, uri]
 
 type
-  MonoMillis* = distinct int64
-    ## Monotonic milliseconds used for deadlines and scheduler wake times.
+  MonoMillis* = distinct int64 ## Monotonic milliseconds used for deadlines
+    ## and scheduler wake times.
 
   HttpMethod* = enum ## HTTP methods accepted by Discord REST routes.
     hmDelete, ## DELETE request.
-    hmGet,    ## GET request.
-    hmPatch,  ## PATCH request.
-    hmPost,   ## POST request.
-    hmPut     ## PUT request.
+    hmGet, ## GET request.
+    hmPatch, ## PATCH request.
+    hmPost, ## POST request.
+    hmPut ## PUT request.
 
-  RequestPriority* = enum ## Scheduler lane for one REST request.
-    ## Lower ordinal means the request is more urgent.
+  RequestPriority* = enum ## Scheduler lane; lower ordinals are more urgent.
     rpInteractionAck, ## Initial interaction acknowledgement.
-    rpForeground,     ## User-visible work awaiting completion.
-    rpNormal,         ## Ordinary application request.
-    rpBackground      ## Command sync, cache fill, or maintenance work.
+    rpForeground, ## User-visible work awaiting completion.
+    rpNormal, ## Ordinary application request.
+    rpBackground ## Command sync, cache fill, or maintenance work.
 
   Idempotency* = enum ## Evidence that permits an automatic retry.
-    idNever,     ## Repeating the request may duplicate an effect.
-    idSafe,      ## The HTTP operation is inherently safe to repeat.
+    idNever, ## Repeating the request may duplicate an effect.
+    idSafe, ## The HTTP operation is inherently safe to repeat.
     idWithNonce, ## Discord can suppress duplicates through a nonce.
-    idExplicit   ## The caller explicitly permits repetition.
+    idExplicit ## The caller explicitly permits repetition.
 
   RetryPolicy* = object ## Bounded exponential-backoff policy.
     maxAttempts*: int ## Total attempts, including the first request.
@@ -47,10 +46,10 @@ type
 
   RouteKey* = object ## Stable scheduler identity for a Discord route.
     httpMethod*: HttpMethod ## Method that participates in the bucket key.
-    templatePath*: string
-      ## Route template with non-major snowflakes replaced by names.
-    majorParameter*: string
-      ## Channel, guild, or webhook identity that partitions a bucket.
+    templatePath*: string ## Route template with non-major snowflakes replaced
+      ## by names.
+    majorParameter*: string ## Channel, guild, or webhook identity that
+      ## partitions a bucket.
 
   RawRequest* = object ## Fully rendered request accepted by the REST runtime.
     route*: RouteKey ## Token-free scheduler and diagnostic identity.

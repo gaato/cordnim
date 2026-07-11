@@ -55,13 +55,17 @@ suite "Chronos interaction HTTP ingress":
       let url = "http://" & $server.localAddress & "/interactions"
 
       let firstRequest = HttpClientRequestRef.new(
-        session, url, MethodPost, headers = headers, body = @[byte '{', byte '}']
+        session, url, MethodPost,
+        headers = headers,
+        body = @[byte '{', byte '}']
       ).get()
       let firstResponse = await firstRequest.fetch()
       await firstRequest.closeWait()
 
       let secondRequest = HttpClientRequestRef.new(
-        session, url, MethodPost, headers = headers, body = @[byte '{', byte '}']
+        session, url, MethodPost,
+        headers = headers,
+        body = @[byte '{', byte '}']
       ).get()
       let secondResponse = await secondRequest.fetch()
       await secondRequest.closeWait()

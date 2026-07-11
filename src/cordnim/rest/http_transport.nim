@@ -10,15 +10,15 @@ import ./[chronos_driver, request, scheduler]
 
 const
   DiscordApiBaseUrl* = "https://discord.com/api/v10" ## Stable API v10 origin.
-  CordnimUserAgent* = "DiscordBot (https://github.com/gaato/cordnim, 0.1.0)"
-    ## Default Discord-compliant user agent.
+  CordnimUserAgent* = "DiscordBot (" &
+    "https://github.com/gaato/cordnim, 0.1.0)" ## Default Discord user agent.
   MaxRateLimitDelaySeconds = 24.0 * 60.0 * 60.0
     # Longer values are not credible Discord bucket windows and would make a
     # scheduler sleep effectively forever even if integer conversion succeeded.
 
 type
-  ResponseBodyLimitError* = object of CatchableError
-    ## Raised before retaining more than the configured response body limit.
+  ResponseBodyLimitError* = object of CatchableError ## Raised before retaining
+    ## more than the configured response body limit.
 
   DiscordHttpTransport* = ref object ## Reusable Chronos HTTP session.
     session: HttpSessionRef
@@ -108,7 +108,7 @@ proc readBounded(response: HttpClientResponseRef,
       if result.len > limit - count:
         raise newException(ResponseBodyLimitError,
           "Discord response exceeds configured body limit")
-      result.add chunk.toOpenArray(0, count - 1)
+      result.add(chunk.toOpenArray(0, count - 1))
     await reader.closeWait()
     reader = nil
     await response.finish()
@@ -153,7 +153,7 @@ proc execute(transport: DiscordHttpTransport,
     # interaction token embedded in its path. Keep that value behind the
     # transport redaction boundary.
     raise newException(ValueError, "invalid Discord REST URL")
-  var httpRequest = built.get()
+  let httpRequest = built.get()
   var response: HttpClientResponseRef
   try:
     response = await httpRequest.send()

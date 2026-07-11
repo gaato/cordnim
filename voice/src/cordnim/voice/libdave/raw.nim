@@ -4,18 +4,29 @@
 ## `-d:cordnimVoiceLibdave` to expose the imported functions. Without that
 ## define, data types remain available for documentation and state-only tests,
 ## and no native library is loaded.
+##
+## The pinned v1.1.1 C header defines the ownership boundary: input data stays
+## caller-owned, output byte arrays use `daveFree`, and output handles use their
+## matching `Destroy` function. It does not promise callback threads or a
+## general `userData` lifetime. Raw callers must keep callback state valid while
+## native code can invoke it, synchronize it for any calling thread, and copy
+## callback data before returning when retention is required.
 
 const
-  libdaveApiRevision* = "v1.1.1/cpp" ## Upstream C API revision mapped by this module.
-  libdaveHeaderSha256* = "dd61a62386ae4cc65110ee787e809d3383059c9b01383d378d6d63c711020859" ## SHA-256 of the mapped upstream header.
+  libdaveApiRevision* = "v1.1.1/cpp" ## Mapped upstream API revision.
+  libdaveHeaderSha256* = ## SHA-256 of the mapped upstream header.
+    "dd61a62386ae4cc65110ee787e809d338" &
+    "3059c9b01383d378d6d63c711020859"
 
   defaultLibdaveLibrary =
     when defined(windows): "libdave.dll"
     elif defined(macosx): "libdave.dylib"
     else: "libdave.so"
 
-  libdaveLibrary* {.strdefine.} = defaultLibdaveLibrary ## Dynamic library name or path used by imported functions.
-  libdaveBindingsEnabled* = defined(cordnimVoiceLibdave) ## Whether native function declarations are enabled.
+  libdaveLibrary* {.strdefine.} = defaultLibdaveLibrary ## Dynamic library name
+    ## or path used by imported functions.
+  libdaveBindingsEnabled* = ## Whether native declarations are enabled.
+    defined(cordnimVoiceLibdave)
 
 type
   DAVESessionHandleObj {.incompleteStruct.} = object
@@ -25,87 +36,92 @@ type
   DAVEEncryptorHandleObj {.incompleteStruct.} = object
   DAVEDecryptorHandleObj {.incompleteStruct.} = object
 
-  DAVESessionHandle* = ptr DAVESessionHandleObj ## Opaque session released by `daveSessionDestroy`.
-  DAVECommitResultHandle* = ptr DAVECommitResultHandleObj ## Opaque commit result released by `daveCommitResultDestroy`.
-  DAVEWelcomeResultHandle* = ptr DAVEWelcomeResultHandleObj ## Opaque welcome result released by `daveWelcomeResultDestroy`.
-  DAVEKeyRatchetHandle* = ptr DAVEKeyRatchetHandleObj ## Opaque key ratchet released by `daveKeyRatchetDestroy`.
-  DAVEEncryptorHandle* = ptr DAVEEncryptorHandleObj ## Opaque encryptor released by `daveEncryptorDestroy`.
-  DAVEDecryptorHandle* = ptr DAVEDecryptorHandleObj ## Opaque decryptor released by `daveDecryptorDestroy`.
+  DAVESessionHandle* = ptr DAVESessionHandleObj ## Opaque session released by
+    ## `daveSessionDestroy`.
+  DAVECommitResultHandle* = ptr DAVECommitResultHandleObj ## Commit result
+    ## released by `daveCommitResultDestroy`.
+  DAVEWelcomeResultHandle* = ptr DAVEWelcomeResultHandleObj ## Welcome result
+    ## released by `daveWelcomeResultDestroy`.
+  DAVEKeyRatchetHandle* = ptr DAVEKeyRatchetHandleObj ## Key ratchet released by
+    ## `daveKeyRatchetDestroy`.
+  DAVEEncryptorHandle* = ptr DAVEEncryptorHandleObj ## Encryptor released by
+    ## `daveEncryptorDestroy`.
+  DAVEDecryptorHandle* = ptr DAVEDecryptorHandleObj ## Decryptor released by
+    ## `daveDecryptorDestroy`.
 
-  DAVECodec* {.size: sizeof(cint).} = enum ## Media codec identifier with C `int` layout.
-    daveCodecUnknown = 0,                    ## Unspecified or unsupported codec.
-    daveCodecOpus = 1,                       ## Opus audio codec.
-    daveCodecVp8 = 2,                        ## VP8 video codec.
-    daveCodecVp9 = 3,                        ## VP9 video codec.
-    daveCodecH264 = 4,                       ## H.264 video codec.
-    daveCodecH265 = 5,                       ## H.265 video codec.
-    daveCodecAv1 = 6                         ## AV1 video codec.
+  DAVECodec* {.size: sizeof(cint).} = enum ## Codec with C `int` layout.
+    daveCodecUnknown = 0, ## Unspecified or unsupported codec.
+    daveCodecOpus = 1, ## Opus audio codec.
+    daveCodecVp8 = 2, ## VP8 video codec.
+    daveCodecVp9 = 3, ## VP9 video codec.
+    daveCodecH264 = 4, ## H.264 video codec.
+    daveCodecH265 = 5, ## H.265 video codec.
+    daveCodecAv1 = 6 ## AV1 video codec.
 
-  DAVEMediaType* {.size: sizeof(cint).} = enum ## Protected media category with C `int` layout.
-    daveMediaTypeAudio = 0,                       ## Audio media frame.
-    daveMediaTypeVideo = 1                        ## Video media frame.
+  DAVEMediaType* {.size: sizeof(cint).} = enum ## Media with C `int` layout.
+    daveMediaTypeAudio = 0, ## Audio media frame.
+    daveMediaTypeVideo = 1 ## Video media frame.
 
-  DAVEEncryptorResultCode* {.size: sizeof(cint).} = enum ## Frame encryption outcome with C `int` layout.
-    daveEncryptorSuccess = 0,                           ## Frame encryption succeeded.
-    daveEncryptorEncryptionFailure = 1,                 ## Cryptographic encryption failed.
-    daveEncryptorMissingKeyRatchet = 2,                 ## No key ratchet was available.
-    daveEncryptorMissingCryptor = 3,                    ## No cryptor was available for the frame.
-    daveEncryptorTooManyAttempts = 4                    ## Retry limit was exhausted.
+  DAVEEncryptorResultCode* {.size: sizeof(cint).} = enum ## Encryption result
+    ## with C `int` layout.
+    daveEncryptorSuccess = 0, ## Frame encryption succeeded.
+    daveEncryptorEncryptionFailure = 1, ## Encryption failed.
+    daveEncryptorMissingKeyRatchet = 2, ## No key ratchet was available.
+    daveEncryptorMissingCryptor = 3, ## No frame cryptor was available.
+    daveEncryptorTooManyAttempts = 4 ## Retry limit was exhausted.
 
-  DAVEDecryptorResultCode* {.size: sizeof(cint).} = enum ## Frame decryption outcome with C `int` layout.
-    daveDecryptorSuccess = 0,                           ## Frame decryption succeeded.
-    daveDecryptorDecryptionFailure = 1,                 ## Cryptographic decryption failed.
-    daveDecryptorMissingKeyRatchet = 2,                 ## No key ratchet was available.
-    daveDecryptorInvalidNonce = 3,                      ## Frame nonce was invalid.
-    daveDecryptorMissingCryptor = 4                     ## No cryptor was available for the frame.
+  DAVEDecryptorResultCode* {.size: sizeof(cint).} = enum ## Decryption result
+    ## with C `int` layout.
+    daveDecryptorSuccess = 0, ## Frame decryption succeeded.
+    daveDecryptorDecryptionFailure = 1, ## Decryption failed.
+    daveDecryptorMissingKeyRatchet = 2, ## No key ratchet was available.
+    daveDecryptorInvalidNonce = 3, ## Frame nonce was invalid.
+    daveDecryptorMissingCryptor = 4 ## No frame cryptor was available.
 
-  DAVELoggingSeverity* {.size: sizeof(cint).} = enum ## Native log severity with C `int` layout.
-    daveLoggingVerbose = 0,                         ## Verbose diagnostic message.
-    daveLoggingInfo = 1,                            ## Informational message.
-    daveLoggingWarning = 2,                         ## Warning message.
-    daveLoggingError = 3,                           ## Error message.
-    daveLoggingNone = 4                             ## Logging is disabled.
+  DAVELoggingSeverity* {.size: sizeof(cint).} = enum ## Log severity with C
+    ## `int` layout.
+    daveLoggingVerbose = 0, ## Verbose diagnostic message.
+    daveLoggingInfo = 1, ## Informational message.
+    daveLoggingWarning = 2, ## Warning message.
+    daveLoggingError = 3, ## Error message.
+    daveLoggingNone = 4 ## Logging is disabled.
 
   DAVEMLSFailureCallback* = proc(
     source, reason: cstring;
     userData: pointer,
-  ) {.cdecl.}
-    ## Receives an MLS failure source and diagnostic reason.
+  ) {.cdecl.} ## Receives an MLS failure source and diagnostic reason.
 
   DAVEPairwiseFingerprintCallback* = proc(
     fingerprint: ptr uint8;
     length: csize_t;
     userData: pointer,
-  ) {.cdecl.}
-    ## Receives one pairwise fingerprint as a borrowed byte range.
+  ) {.cdecl.} ## Receives callback-scoped bytes freed after the callback.
 
   DAVEEncryptorProtocolVersionChangedCallback* = proc(
     userData: pointer,
-  ) {.cdecl.}
-    ## Reports that an encryptor's active protocol version changed.
+  ) {.cdecl.} ## Reports that an encryptor's active protocol version changed.
 
   DAVELogSinkCallback* = proc(
     severity: DAVELoggingSeverity;
     fileName: cstring;
     line: cint;
     message: cstring,
-  ) {.cdecl.}
-    ## Receives one native libdave log record.
+  ) {.cdecl.} ## Receives a log record whose strings are callback-scoped.
 
-  DAVEEncryptorStats* {.bycopy.} = object ## C-compatible cumulative encryptor counters.
+  DAVEEncryptorStats* {.bycopy.} = object ## C-compatible encryptor counters.
     passthroughCount*: uint64 ## Frames emitted without encryption.
     encryptSuccessCount*: uint64 ## Frames encrypted successfully.
     encryptFailureCount*: uint64 ## Frames whose encryption failed.
-    encryptDuration*: uint64 ## Cumulative encryption duration reported by libdave.
+    encryptDuration*: uint64 ## Cumulative libdave encryption duration.
     encryptAttempts*: uint64 ## Total encryption attempts.
-    encryptMaxAttempts*: uint64 ## Maximum encryption attempts reported for one frame.
+    encryptMaxAttempts*: uint64 ## Maximum attempts for one frame.
     encryptMissingKeyCount*: uint64 ## Attempts made without a usable key.
 
-  DAVEDecryptorStats* {.bycopy.} = object ## C-compatible cumulative decryptor counters.
+  DAVEDecryptorStats* {.bycopy.} = object ## C-compatible decryptor counters.
     passthroughCount*: uint64 ## Frames accepted without decryption.
     decryptSuccessCount*: uint64 ## Frames decrypted successfully.
     decryptFailureCount*: uint64 ## Frames whose decryption failed.
-    decryptDuration*: uint64 ## Cumulative decryption duration reported by libdave.
+    decryptDuration*: uint64 ## Cumulative libdave decryption duration.
     decryptAttempts*: uint64 ## Total decryption attempts.
     decryptMissingKeyCount*: uint64 ## Attempts made without a usable key.
     decryptInvalidNonceCount*: uint64 ## Frames rejected for an invalid nonce.
@@ -118,7 +134,7 @@ when defined(cordnimVoiceLibdave):
     ## Returns the highest DAVE protocol version supported by libdave.
   proc daveFree*(data: pointer)
     {.importc: "daveFree".}
-    ## Releases a buffer allocated and returned by libdave.
+    ## Releases a libdave output buffer; opaque handles require `Destroy`.
 
   proc daveSessionCreate*(
       context: pointer;
@@ -140,7 +156,10 @@ when defined(cordnimVoiceLibdave):
   proc daveSessionReset*(session: DAVESessionHandle)
     {.importc: "daveSessionReset".}
     ## Clears negotiated MLS state while retaining the session handle.
-  proc daveSessionSetProtocolVersion*(session: DAVESessionHandle; version: uint16)
+  proc daveSessionSetProtocolVersion*(
+      session: DAVESessionHandle;
+      version: uint16,
+  )
     {.importc: "daveSessionSetProtocolVersion".}
     ## Selects the DAVE protocol version used by `session`.
   proc daveSessionGetProtocolVersion*(session: DAVESessionHandle): uint16
@@ -151,7 +170,7 @@ when defined(cordnimVoiceLibdave):
       authenticator: ptr ptr uint8;
       length: ptr csize_t,
   ) {.importc: "daveSessionGetLastEpochAuthenticator".}
-    ## Writes the latest MLS epoch authenticator and its byte length.
+    ## Allocates the authenticator output; the caller must use `daveFree`.
   proc daveSessionSetExternalSender*(
       session: DAVESessionHandle;
       externalSender: ptr uint8;
@@ -167,7 +186,7 @@ when defined(cordnimVoiceLibdave):
       commitWelcomeBytes: ptr ptr uint8;
       commitWelcomeBytesLength: ptr csize_t,
   ) {.importc: "daveSessionProcessProposals".}
-    ## Processes MLS proposals and writes any generated commit-welcome payload.
+    ## Allocates any commit-welcome output; the caller must use `daveFree`.
   proc daveSessionProcessCommit*(
       session: DAVESessionHandle;
       commit: ptr uint8;
@@ -181,13 +200,13 @@ when defined(cordnimVoiceLibdave):
       recognizedUserIds: ptr cstring;
       recognizedUserIdsLength: csize_t,
   ): DAVEWelcomeResultHandle {.importc: "daveSessionProcessWelcome".}
-    ## Processes an MLS welcome for the recognized roster and returns its result.
+    ## Processes an MLS welcome and returns the recognized-roster result.
   proc daveSessionGetMarshalledKeyPackage*(
       session: DAVESessionHandle;
       keyPackage: ptr ptr uint8;
       length: ptr csize_t,
   ) {.importc: "daveSessionGetMarshalledKeyPackage".}
-    ## Writes the session's serialized MLS key package and its byte length.
+    ## Allocates the key-package output; the caller must use `daveFree`.
   proc daveSessionGetKeyRatchet*(
       session: DAVESessionHandle;
       userId: cstring,
@@ -217,14 +236,14 @@ when defined(cordnimVoiceLibdave):
       rosterIds: ptr ptr uint64;
       rosterIdsLength: ptr csize_t,
   ) {.importc: "daveCommitResultGetRosterMemberIds".}
-    ## Writes the roster member IDs associated with a commit result.
+    ## Allocates the roster-ID output; the caller must use `daveFree`.
   proc daveCommitResultGetRosterMemberSignature*(
       handle: DAVECommitResultHandle;
       rosterId: uint64;
       signature: ptr ptr uint8;
       signatureLength: ptr csize_t,
   ) {.importc: "daveCommitResultGetRosterMemberSignature".}
-    ## Writes the commit signature associated with `rosterId`.
+    ## Allocates the signature output; the caller must use `daveFree`.
   proc daveCommitResultDestroy*(handle: DAVECommitResultHandle)
     {.importc: "daveCommitResultDestroy".}
     ## Destroys `handle` and releases its native result resources.
@@ -234,14 +253,14 @@ when defined(cordnimVoiceLibdave):
       rosterIds: ptr ptr uint64;
       rosterIdsLength: ptr csize_t,
   ) {.importc: "daveWelcomeResultGetRosterMemberIds".}
-    ## Writes the roster member IDs associated with a welcome result.
+    ## Allocates the roster-ID output; the caller must use `daveFree`.
   proc daveWelcomeResultGetRosterMemberSignature*(
       handle: DAVEWelcomeResultHandle;
       rosterId: uint64;
       signature: ptr ptr uint8;
       signatureLength: ptr csize_t,
   ) {.importc: "daveWelcomeResultGetRosterMemberSignature".}
-    ## Writes the welcome signature associated with `rosterId`.
+    ## Allocates the signature output; the caller must use `daveFree`.
   proc daveWelcomeResultDestroy*(handle: DAVEWelcomeResultHandle)
     {.importc: "daveWelcomeResultDestroy".}
     ## Destroys `handle` and releases its native result resources.
@@ -256,7 +275,7 @@ when defined(cordnimVoiceLibdave):
       encryptor: DAVEEncryptorHandle;
       keyRatchet: DAVEKeyRatchetHandle,
   ) {.importc: "daveEncryptorSetKeyRatchet".}
-    ## Assigns a key ratchet to `encryptor`.
+    ## Assigns without taking ownership; the caller still destroys the ratchet.
   proc daveEncryptorSetPassthroughMode*(
       encryptor: DAVEEncryptorHandle;
       passthroughMode: bool,
@@ -276,7 +295,7 @@ when defined(cordnimVoiceLibdave):
       mediaType: DAVEMediaType;
       frameSize: csize_t,
   ): csize_t {.importc: "daveEncryptorGetMaxCiphertextByteSize".}
-    ## Returns the required output capacity for encrypting a frame of `frameSize`.
+    ## Returns the output capacity needed to encrypt `frameSize` bytes.
   proc daveEncryptorHasKeyRatchet*(encryptor: DAVEEncryptorHandle): bool
     {.importc: "daveEncryptorHasKeyRatchet".}
     ## Reports whether `encryptor` has an assigned key ratchet.
@@ -299,7 +318,7 @@ when defined(cordnimVoiceLibdave):
       callback: DAVEEncryptorProtocolVersionChangedCallback;
       userData: pointer,
   ) {.importc: "daveEncryptorSetProtocolVersionChangedCallback".}
-    ## Installs the callback invoked when the encryptor's protocol version changes.
+    ## Installs the callback for encryptor protocol-version changes.
   proc daveEncryptorGetStats*(
       encryptor: DAVEEncryptorHandle;
       mediaType: DAVEMediaType;
@@ -317,7 +336,7 @@ when defined(cordnimVoiceLibdave):
       decryptor: DAVEDecryptorHandle;
       keyRatchet: DAVEKeyRatchetHandle,
   ) {.importc: "daveDecryptorTransitionToKeyRatchet".}
-    ## Transitions `decryptor` to an assigned key ratchet.
+    ## Transitions without taking ownership; the caller destroys the ratchet.
   proc daveDecryptorTransitionToPassthroughMode*(
       decryptor: DAVEDecryptorHandle;
       passthroughMode: bool,
@@ -348,6 +367,6 @@ when defined(cordnimVoiceLibdave):
 
   proc daveSetLogSinkCallback*(callback: DAVELogSinkCallback)
     {.importc: "daveSetLogSinkCallback".}
-    ## Installs the process-wide native log sink callback.
+    ## Installs the process-wide callback; upstream gives no thread guarantee.
 
   {.pop.}

@@ -1,6 +1,7 @@
 import std/[assertions, options, sequtils]
 
-import cordnim/gateway/[close_policy, dispatch, identify, session, sharding, supervisor]
+import cordnim/gateway/[
+  close_policy, dispatch, identify, session, sharding, supervisor]
 
 block session_cursor_lifecycle:
   var state = initGatewaySession(ShardId(2))
@@ -29,9 +30,13 @@ block memory_session_store:
   doAssert store.get(ShardId(1)).isNone
 
 block close_code_policy:
-  doAssert classifyGatewayClose(GatewayCloseCode(4007)).action == identifyNewSession
+  doAssert(
+    classifyGatewayClose(GatewayCloseCode(4007)).action == identifyNewSession
+  )
   doAssert classifyGatewayClose(GatewayCloseCode(4009)).retryable
-  doAssert classifyGatewayClose(GatewayCloseCode(4014)).action == stopReconnecting
+  doAssert(
+    classifyGatewayClose(GatewayCloseCode(4014)).action == stopReconnecting
+  )
   doAssert classifyGatewayClose(GatewayCloseCode(1006)).action == resumeSession
 
 block identify_buckets_and_budget:

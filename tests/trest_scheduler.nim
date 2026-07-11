@@ -23,8 +23,11 @@ suite "REST scheduler":
 
   test "interaction acknowledgements win inside a ready bucket":
     var scheduler = initScheduler()
-    discard scheduler.enqueue(request("/channels/{channel}/messages", rpNormal), MonoMillis(0))
-    discard scheduler.enqueue(request("/channels/{channel}/messages", rpInteractionAck), MonoMillis(0))
+    discard scheduler.enqueue(
+      request("/channels/{channel}/messages", rpNormal), MonoMillis(0))
+    discard scheduler.enqueue(
+      request("/channels/{channel}/messages", rpInteractionAck),
+      MonoMillis(0))
 
     let selected = scheduler.takeReady(MonoMillis(0))
     check selected.kind == tkReady
@@ -32,7 +35,8 @@ suite "REST scheduler":
 
   test "learned bucket headers delay subsequent requests":
     var scheduler = initScheduler()
-    let firstId = scheduler.enqueue(request("/channels/{channel}/messages", rpNormal), MonoMillis(0))
+    let firstId = scheduler.enqueue(
+      request("/channels/{channel}/messages", rpNormal), MonoMillis(0))
     discard firstId
     let first = scheduler.takeReady(MonoMillis(0)).request
     scheduler.complete(first, RateLimitUpdate(
@@ -42,7 +46,8 @@ suite "REST scheduler":
       resetAfterMs: some(1_000'i64)
     ), MonoMillis(0))
 
-    discard scheduler.enqueue(request("/channels/{channel}/messages", rpNormal), MonoMillis(1))
+    discard scheduler.enqueue(
+      request("/channels/{channel}/messages", rpNormal), MonoMillis(1))
     let waiting = scheduler.takeReady(MonoMillis(1))
     check waiting.kind == tkWait
     check waiting.wakeAt == MonoMillis(1_000)
@@ -52,7 +57,8 @@ suite "REST scheduler":
     var cancelled = request("/a", rpNormal)
     cancelled.meta.cancellationId = some(42'u64)
     discard scheduler.enqueue(cancelled, MonoMillis(0))
-    discard scheduler.enqueue(request("/b", rpNormal, some(MonoMillis(5))), MonoMillis(0))
+    discard scheduler.enqueue(
+      request("/b", rpNormal, some(MonoMillis(5))), MonoMillis(0))
     scheduler.cancel(42)
 
     check scheduler.takeReady(MonoMillis(5)).kind == tkIdle

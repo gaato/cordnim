@@ -3,12 +3,15 @@
 import std/[json, options]
 
 type
-  RawModelError* = object of ValueError ## Invalid use or decoding of a raw schema model.
+  RawModelError* = object of ValueError ## Invalid use or decoding of a raw
+    ## schema model.
 
-  RawEnumValue*[T] = object ## Forward-compatible enum storage retaining its wire value.
+  RawEnumValue*[T] = object ## Forward-compatible enum storage retaining its
+    ## wire value.
     raw*: T ## Unmodified wire value; known values are only a view.
 
-  RawField* = object ## Unknown JSON object field preserved by a semantic decoder.
+  RawField* = object ## Unknown JSON object field preserved by a semantic
+    ## decoder.
     name*: string ## Original JSON property name.
     value*: JsonNode ## Complete original JSON value.
 
@@ -56,10 +59,5 @@ func unknownFields*(
   if raw.isNil or raw.kind != JObject:
     return
   for name, value in raw:
-    var known = false
-    for knownName in knownNames:
-      if name == knownName:
-        known = true
-        break
-    if not known:
-      result.add RawField(name: name, value: value)
+    if name notin knownNames:
+      result.add(RawField(name: name, value: value))

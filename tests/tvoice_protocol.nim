@@ -14,7 +14,9 @@ block binary_voice_messages:
   doAssert message.sequence.get == 0x1234'u16
   doAssert message.opcode == voiceDaveMlsWelcome
   doAssert message.payload == @[1'u8, 2, 3]
-  doAssert encodeClientBinary(voiceDaveMlsKeyPackage, [4'u8, 5]) == @[26'u8, 4, 5]
+  doAssert(
+    encodeClientBinary(voiceDaveMlsKeyPackage, [4'u8, 5]) == @[26'u8, 4, 5]
+  )
   doAssertRaises ValueError:
     discard parseServerBinary([1'u8, 2])
   doAssertRaises ValueError:
@@ -32,6 +34,8 @@ block voice_sequence_ack_wraps:
 
 block voice_close_policy:
   doAssert classifyVoiceClose(VoiceCloseCode(4015)).action == resumeVoiceSession
-  doAssert classifyVoiceClose(VoiceCloseCode(4006)).action == identifyVoiceSession
+  doAssert(
+    classifyVoiceClose(VoiceCloseCode(4006)).action == identifyVoiceSession
+  )
   doAssert classifyVoiceClose(VoiceCloseCode(4017)).action == stopVoiceReconnect
   doAssert not classifyVoiceClose(VoiceCloseCode(4022)).retryable

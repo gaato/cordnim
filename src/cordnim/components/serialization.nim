@@ -5,8 +5,9 @@ import std/[json, options, strutils]
 import cordnim/core/ids
 import ./[model, validation]
 
-const ComponentsV2MessageFlag* = 1 shl 15
-  ## `IS_COMPONENTS_V2`, set permanently when a V2 message is first sent.
+const ComponentsV2MessageFlag* = 1 shl 15 ## `IS_COMPONENTS_V2`, set
+                                          ## permanently when a V2 message is
+                                          ## first sent.
 
 func wireType(kind: MessageComponentKind): int =
   case kind
@@ -67,7 +68,7 @@ func componentJson*(node: ComponentNode): JsonNode =
   of mckActionRow, mckContainer:
     result["components"] = newJArray()
     for child in node.children:
-      result["components"].add child.componentJson()
+      result["components"].add(child.componentJson())
   of mckButton:
     result["style"] = %ord(node.buttonStyle)
     if node.text.len != 0:
@@ -96,20 +97,20 @@ func componentJson*(node: ComponentNode): JsonNode =
     if node.kind == mckStringSelect:
       result["options"] = newJArray()
       for option in node.options:
-        result["options"].add option.selectOptionJson()
+        result["options"].add(option.selectOptionJson())
     elif node.defaultValues.len != 0:
       result["default_values"] = newJArray()
       for value in node.defaultValues:
-        result["default_values"].add value.defaultValueJson()
+        result["default_values"].add(value.defaultValueJson())
     if node.kind == mckChannelSelect and node.channelTypes.len != 0:
       result["channel_types"] = newJArray()
       for channelType in node.channelTypes:
-        result["channel_types"].add %ord(channelType)
+        result["channel_types"].add(%ord(channelType))
   of mckSection:
     result["components"] = newJArray()
     for child in node.children:
       if child.kind == mckTextDisplay:
-        result["components"].add child.componentJson()
+        result["components"].add(child.componentJson())
       else:
         result["accessory"] = child.componentJson()
   of mckTextDisplay:
@@ -123,7 +124,7 @@ func componentJson*(node: ComponentNode): JsonNode =
   of mckMediaGallery:
     result["items"] = newJArray()
     for child in node.children:
-      result["items"].add child.componentJson()
+      result["items"].add(child.componentJson())
   of mckMediaItem:
     result["media"] = node.url.mediaJson()
     if node.description.len != 0:
@@ -156,7 +157,7 @@ proc toJson*(draft: MessageDraft[V2]): JsonNode =
   result["flags"] = %ComponentsV2MessageFlag
   result["components"] = newJArray()
   for child in draft.v2.children:
-    result["components"].add child.componentJson()
+    result["components"].add(child.componentJson())
 
 proc toJson*(draft: MessageDraft[Legacy]): JsonNode =
   ## Serializes only fields legal on a legacy message.
@@ -166,7 +167,7 @@ proc toJson*(draft: MessageDraft[Legacy]): JsonNode =
   if draft.legacy.embedsJson.len != 0:
     result["embeds"] = newJArray()
     for value in draft.legacy.embedsJson:
-      result["embeds"].add parseJson(value)
+      result["embeds"].add(parseJson(value))
   if draft.legacy.pollJson.isSome:
     result["poll"] = parseJson(draft.legacy.pollJson.get())
   if draft.legacy.stickers.len != 0:

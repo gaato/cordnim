@@ -1,15 +1,15 @@
 ## Discord Voice Gateway v8 opcode metadata.
 
-const voiceGatewayVersion* = 8'u8 ## Voice Gateway protocol version implemented here.
+const voiceGatewayVersion* = 8'u8 ## Implemented Voice Gateway version.
 
 type
-  VoiceOpcode* = distinct uint8 ## Raw Voice Gateway opcode preserving unknown values.
+  VoiceOpcode* = distinct uint8 ## Raw opcode preserving unknown values.
 
   VoiceOpcodeDirection* = enum ## Allowed transport direction for an opcode.
-    voiceClientToServer,       ## Opcode is sent only by a voice client.
-    voiceServerToClient,       ## Opcode is sent only by the voice server.
-    voiceBidirectional,        ## Opcode may be sent by either peer.
-    voiceDirectionUnknown      ## Opcode has no known direction in this version.
+    voiceClientToServer, ## Opcode is sent only by a voice client.
+    voiceServerToClient, ## Opcode is sent only by the voice server.
+    voiceBidirectional, ## Opcode may be sent by either peer.
+    voiceDirectionUnknown ## Opcode has no known direction in this version.
 
 func `==`*(a, b: VoiceOpcode): bool {.borrow.}
   ## Compares opcodes by their numeric wire value.
@@ -19,25 +19,25 @@ const
   voiceSelectProtocol* = VoiceOpcode(1) ## Selects the media transport protocol.
   voiceReady* = VoiceOpcode(2) ## Announces that the voice server is ready.
   voiceHeartbeat* = VoiceOpcode(3) ## Carries a client heartbeat.
-  voiceSessionDescription* = VoiceOpcode(4) ## Carries negotiated session parameters.
+  voiceSessionDescription* = VoiceOpcode(4) ## Negotiated session parameters.
   voiceSpeaking* = VoiceOpcode(5) ## Updates a participant's speaking state.
   voiceHeartbeatAck* = VoiceOpcode(6) ## Acknowledges a client heartbeat.
   voiceResume* = VoiceOpcode(7) ## Requests voice session resumption.
   voiceHello* = VoiceOpcode(8) ## Announces the heartbeat interval.
   voiceResumed* = VoiceOpcode(9) ## Confirms voice session resumption.
   voiceClientsConnect* = VoiceOpcode(11) ## Announces connected voice clients.
-  voiceClientDisconnect* = VoiceOpcode(13) ## Announces a disconnected voice client.
-  voiceDavePrepareTransition* = VoiceOpcode(21) ## Begins a DAVE protocol transition.
-  voiceDaveExecuteTransition* = VoiceOpcode(22) ## Commits a prepared DAVE transition.
-  voiceDaveTransitionReady* = VoiceOpcode(23) ## Reports client readiness for a transition.
-  voiceDavePrepareEpoch* = VoiceOpcode(24) ## Begins preparation of a new MLS epoch.
-  voiceDaveMlsExternalSender* = VoiceOpcode(25) ## Supplies the MLS external sender package.
-  voiceDaveMlsKeyPackage* = VoiceOpcode(26) ## Supplies the client's MLS key package.
-  voiceDaveMlsProposals* = VoiceOpcode(27) ## Carries MLS proposals from the server.
-  voiceDaveMlsCommitWelcome* = VoiceOpcode(28) ## Carries a client MLS commit and welcome.
-  voiceDaveMlsAnnounceCommitTransition* = VoiceOpcode(29) ## Announces an MLS commit transition.
-  voiceDaveMlsWelcome* = VoiceOpcode(30) ## Carries an MLS welcome from the server.
-  voiceDaveMlsInvalidCommitWelcome* = VoiceOpcode(31) ## Rejects an invalid commit or welcome.
+  voiceClientDisconnect* = VoiceOpcode(13) ## Disconnected voice client.
+  voiceDavePrepareTransition* = VoiceOpcode(21) ## Starts a DAVE transition.
+  voiceDaveExecuteTransition* = VoiceOpcode(22) ## Commits a DAVE transition.
+  voiceDaveTransitionReady* = VoiceOpcode(23) ## Client transition readiness.
+  voiceDavePrepareEpoch* = VoiceOpcode(24) ## Starts a new MLS epoch.
+  voiceDaveMlsExternalSender* = VoiceOpcode(25) ## MLS external sender package.
+  voiceDaveMlsKeyPackage* = VoiceOpcode(26) ## Client MLS key package.
+  voiceDaveMlsProposals* = VoiceOpcode(27) ## Server MLS proposals.
+  voiceDaveMlsCommitWelcome* = VoiceOpcode(28) ## MLS commit and welcome.
+  voiceDaveMlsAnnounceCommitTransition* = VoiceOpcode(29) ## MLS transition.
+  voiceDaveMlsWelcome* = VoiceOpcode(30) ## Server MLS welcome.
+  voiceDaveMlsInvalidCommitWelcome* = VoiceOpcode(31) ## Invalid MLS payload.
 
 func toUint8*(opcode: VoiceOpcode): uint8 {.inline, raises: [].} =
   ## Returns the opcode's numeric wire value.

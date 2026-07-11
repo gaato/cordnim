@@ -6,28 +6,28 @@ import ./model
 
 const
   MaxMessageComponents* = 40 ## Discord's total Components V2 node limit.
-  MaxCustomIdBytes* = 100    ## Maximum UTF-8 bytes in a component custom ID.
+  MaxCustomIdBytes* = 100 ## Maximum UTF-8 bytes in a component custom ID.
 
 type
   ComponentProblemKind* = enum ## Stable categories returned by validation.
-    cpkTooManyComponents,       ## Tree exceeds `MaxMessageComponents`.
-    cpkInvalidRoot,             ## Node is not legal at the message root.
-    cpkInvalidChild,            ## Parent-child relationship is illegal.
-    cpkInvalidActionRow,        ## Action row cardinality or child mix is illegal.
-    cpkInvalidSection,          ## Section text/accessory structure is illegal.
-    cpkMissingCustomId,         ## Interactive component has no custom ID.
-    cpkCustomIdTooLong,         ## Custom ID exceeds `MaxCustomIdBytes`.
-    cpkButtonTargetConflict,    ## Button has both or neither custom ID and URL.
-    cpkMissingValue,            ## Required text, URL, or upload reference is empty.
-    cpkInvalidSelect,           ## Select values or options violate Discord limits.
-    cpkDuplicateCustomId,       ## Interactive IDs collide within one message.
-    cpkInvalidMedia,            ## Media metadata violates Discord limits.
-    cpkInvalidStyle             ## Style-specific fields are inconsistent.
+    cpkTooManyComponents, ## Tree exceeds `MaxMessageComponents`.
+    cpkInvalidRoot, ## Node is not legal at the message root.
+    cpkInvalidChild, ## Parent-child relationship is illegal.
+    cpkInvalidActionRow, ## Action row cardinality or child mix is illegal.
+    cpkInvalidSection, ## Section text/accessory structure is illegal.
+    cpkMissingCustomId, ## Interactive component has no custom ID.
+    cpkCustomIdTooLong, ## Custom ID exceeds `MaxCustomIdBytes`.
+    cpkButtonTargetConflict, ## Button has both or neither custom ID and URL.
+    cpkMissingValue, ## Required text, URL, or upload reference is empty.
+    cpkInvalidSelect, ## Select values or options violate Discord limits.
+    cpkDuplicateCustomId, ## Interactive IDs collide within one message.
+    cpkInvalidMedia, ## Media metadata violates Discord limits.
+    cpkInvalidStyle ## Style-specific fields are inconsistent.
 
   ComponentProblem* = object ## One validation failure with a stable tree path.
     kind*: ComponentProblemKind ## Machine-readable category.
-    path*: string               ## Root-relative component path.
-    message*: string            ## Human-readable Discord constraint.
+    path*: string ## Root-relative component path.
+    message*: string ## Human-readable Discord constraint.
 
   ComponentValidation* = object ## Result of validating an entire draft.
     problems*: seq[ComponentProblem] ## Empty when the draft is legal.
@@ -38,11 +38,11 @@ func valid*(validation: ComponentValidation): bool =
 
 proc addProblem(validation: var ComponentValidation,
                 kind: ComponentProblemKind, path, message: string) =
-  validation.problems.add ComponentProblem(
+  validation.problems.add(ComponentProblem(
     kind: kind,
     path: path,
     message: message
-  )
+  ))
 
 func countComponents*(node: ComponentNode): int =
   ## Counts `node` and all descendants against Discord's total limit.
@@ -94,7 +94,7 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
       validation.addProblem(cpkInvalidSelect, path,
         "select has more than 25 default values")
     if node.kind == mckStringSelect:
-      if node.options.len notin 1 .. 25:
+      if node.options.len notin 1..25:
         validation.addProblem(
           cpkInvalidSelect, path,
           "string select requires between one and 25 options"
@@ -170,13 +170,15 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         "button emoji requires a name or custom emoji ID")
   of mckTextDisplay:
     if node.text.len == 0:
-      validation.addProblem(cpkMissingValue, path, "text display cannot be empty")
+      validation.addProblem(cpkMissingValue, path,
+        "text display cannot be empty")
     elif node.text.runeLen > 4_000:
       validation.addProblem(cpkMissingValue, path,
         "text display exceeds 4000 characters")
   of mckThumbnail:
     if node.url.len == 0:
-      validation.addProblem(cpkMissingValue, path, "media component requires a url")
+      validation.addProblem(cpkMissingValue, path,
+        "media component requires a url")
     if parent.isNone or parent.get() != mckSection:
       validation.addProblem(
         cpkInvalidChild, path,
@@ -187,7 +189,8 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         "thumbnail description exceeds 1024 characters")
   of mckMediaItem:
     if node.url.len == 0:
-      validation.addProblem(cpkMissingValue, path, "media component requires a url")
+      validation.addProblem(cpkMissingValue, path,
+        "media component requires a url")
     if parent.isNone or parent.get() != mckMediaGallery:
       validation.addProblem(
         cpkInvalidChild, path,
@@ -198,7 +201,8 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         "media description exceeds 1024 characters")
   of mckFile:
     if node.text.len == 0:
-      validation.addProblem(cpkMissingValue, path, "file requires an upload reference")
+      validation.addProblem(cpkMissingValue, path,
+        "file requires an upload reference")
   of mckActionRow:
     let selects = node.children.countIt(it != nil and it.kind.isSelect)
     let buttons = node.children.countIt(it != nil and it.kind == mckButton)
@@ -211,10 +215,11 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         "action row requires one select or between one and five buttons"
       )
   of mckSection:
-    let textCount = node.children.countIt(it != nil and it.kind == mckTextDisplay)
+    let textCount = node.children.countIt(
+      it != nil and it.kind == mckTextDisplay)
     let accessoryCount = node.children.countIt(
       it != nil and it.kind in {mckButton, mckThumbnail})
-    if textCount notin 1 .. 3 or accessoryCount != 1 or
+    if textCount notin 1..3 or accessoryCount != 1 or
         textCount + accessoryCount != node.children.len:
       validation.addProblem(
         cpkInvalidSection, path,
@@ -236,7 +241,7 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
     if node.children.len == 0:
       validation.addProblem(cpkInvalidChild, path, "container cannot be empty")
     if node.accentColor.isSome and
-        node.accentColor.get() notin 0 .. 0xff_ff_ff:
+        node.accentColor.get() notin 0..0xff_ff_ff:
       validation.addProblem(cpkInvalidStyle, path,
         "container accent color must be a 24-bit RGB value")
   else:

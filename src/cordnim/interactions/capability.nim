@@ -14,20 +14,20 @@ type
   Responded* = object ## Marker for a committed immediate response.
   TransportUnknown* = object ## Marker for ambiguous transport delivery.
 
-  Interaction*[State] = object
-    ## Move-only view of one interaction response lifecycle state.
+  Interaction*[State] = object ## Move-only view of one interaction response
+    ## lifecycle state.
     responder: InteractionResponder
     interactionType: InteractionType
 
-  PendingInitial*[Next] = object
-    ## Move-only claim held while caller-owned transport I/O is in progress.
+  PendingInitial*[Next] = object ## Move-only claim held while caller-owned
+    ## transport I/O is in progress.
     responder: InteractionResponder
     claim: InitialResponseClaim
     responseKind: InitialResponseKind
 
-  BeginInitialResult*[Next] = object
-    ## Result of atomically claiming a typed first-response transition.
-    case ok*: bool
+  BeginInitialResult*[Next] = object ## Result of atomically claiming a typed
+    ## first-response transition.
+    case ok*: bool ## Whether the claim succeeded; selects `pending` or `error`.
     of true:
       pending*: PendingInitial[Next] ## Exclusive pending transport capability.
     of false:

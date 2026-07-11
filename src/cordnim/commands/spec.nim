@@ -12,98 +12,109 @@ import cordnim/interactions/context
 
 type
   CommandKind* = enum ## Discord application command kinds.
-    ckChatInput,      ## A slash command with typed options.
-    ckUser,           ## A command shown in a user's context menu.
-    ckMessage         ## A command shown in a message's context menu.
+    ckChatInput, ## A slash command with typed options.
+    ckUser, ## A command shown in a user's context menu.
+    ckMessage ## A command shown in a message's context menu.
 
   CommandOptionKind* = enum ## Discord application command option kinds.
-    cokString,        ## A UTF-8 string option.
-    cokInteger,       ## An integer option.
-    cokBoolean,       ## A boolean option.
-    cokUser,          ## A user snowflake or resolved user.
-    cokChannel,       ## A channel snowflake or resolved channel.
-    cokRole,          ## A role snowflake or resolved role.
-    cokMentionable,   ## A user-or-role option.
-    cokNumber,        ## A floating-point option.
-    cokAttachment     ## An attachment option.
+    cokString, ## A UTF-8 string option.
+    cokInteger, ## An integer option.
+    cokBoolean, ## A boolean option.
+    cokUser, ## A user snowflake or resolved user.
+    cokChannel, ## A channel snowflake or resolved channel.
+    cokRole, ## A role snowflake or resolved role.
+    cokMentionable, ## A user-or-role option.
+    cokNumber, ## A floating-point option.
+    cokAttachment ## An attachment option.
 
-  CommandInstallContext* = enum ## Where an application command may be installed.
-    guildInstall,    ## Installation owned by a guild.
-    userInstall      ## Installation owned by a user.
+  CommandInstallContext* = enum ## Where an application command may be
+                                ## installed.
+    guildInstall, ## Installation owned by a guild.
+    userInstall ## Installation owned by a user.
 
   CommandInteractionContext* = enum ## Surfaces where a command may be invoked.
-    guildChannel,    ## A channel belonging to a guild.
-    botDm,           ## A direct message with the installed bot user.
-    privateChannel   ## A private channel available to a user-installed app.
+    guildChannel, ## A channel belonging to a guild.
+    botDm, ## A direct message with the installed bot user.
+    privateChannel ## A private channel available to a user-installed app.
 
-  CommandAckKind* = enum ## Initial-response policy generated into command metadata.
-    ackManual,          ## The handler must acknowledge the interaction itself.
-    ackAutoDefer,       ## The runtime may create a deferred message response.
-    ackAutoDeferUpdate  ## The runtime may defer an update to an existing message.
+  CommandAckKind* = enum ## Initial-response policy generated into command
+                         ## metadata.
+    ackManual, ## The handler must acknowledge the interaction itself.
+    ackAutoDefer, ## The runtime may create a deferred message response.
+    ackAutoDeferUpdate ## The runtime may defer an update to an existing
+                       ## message.
 
   CommandChoice* = object ## One statically generated Discord option choice.
-    name*: string       ## User-facing choice name.
-    value*: string      ## Stable wire value accepted by the decoder.
+    name*: string ## User-facing choice name.
+    value*: string ## Stable wire value accepted by the decoder.
 
-  CommandOptionSpec* = object ## Generated schema for one typed procedure parameter.
-    name*: string                  ## Discord option name.
-    description*: string           ## User-facing option description.
-    kind*: CommandOptionKind       ## Discord wire option kind.
-    required*: bool                ## Whether the option must be present.
-    minimumInt*: Option[int64]     ## Inclusive integer minimum for range types.
-    maximumInt*: Option[int64]     ## Inclusive integer maximum for range types.
-    choices*: seq[CommandChoice]   ## Enum choices in declaration order.
+  CommandOptionSpec* = object ## Generated schema for one typed procedure
+                              ## parameter.
+    name*: string ## Discord option name.
+    description*: string ## User-facing option description.
+    kind*: CommandOptionKind ## Discord wire option kind.
+    required*: bool ## Whether the option must be present.
+    minimumInt*: Option[int64] ## Inclusive integer minimum for range types.
+    maximumInt*: Option[int64] ## Inclusive integer maximum for range types.
+    choices*: seq[CommandChoice] ## Enum choices in declaration order.
 
   CommandSpec* = object ## Complete generated schema for an application command.
-    name*: string                                  ## Discord command name.
-    description*: string                           ## User-facing command description.
-    kind*: CommandKind                             ## Discord command kind.
-    installs*: set[CommandInstallContext]          ## Supported installation owners.
-    contexts*: set[CommandInteractionContext]      ## Supported invocation surfaces.
-    ack*: CommandAckKind                           ## Initial-response policy.
-    autoDeferAfterMs*: int                         ## Auto-defer delay in milliseconds.
-    ephemeral*: bool                               ## Whether an auto-defer is ephemeral.
-    requiredBotPermissions*: Permissions           ## Known bot permissions used by the handler.
-    options*: seq[CommandOptionSpec]               ## Typed command options.
+    name*: string ## Discord command name.
+    description*: string ## User-facing command description.
+    kind*: CommandKind ## Discord command kind.
+    installs*: set[CommandInstallContext] ## Supported installation owners.
+    contexts*: set[CommandInteractionContext] ## Supported invocation surfaces.
+    ack*: CommandAckKind ## Initial-response policy.
+    autoDeferAfterMs*: int ## Auto-defer delay in milliseconds.
+    ephemeral*: bool ## Whether an auto-defer is ephemeral.
+    requiredBotPermissions*: Permissions ## Known bot permissions used by the
+                                         ## handler.
+    options*: seq[CommandOptionSpec] ## Typed command options.
 
   CommandTargetKind* = enum ## Context-menu command target category.
-    ctkUser,                 ## Selected user target.
-    ctkMessage               ## Selected message target.
+    ctkUser, ## Selected user target.
+    ctkMessage ## Selected message target.
 
   CommandTarget* = object ## Typed target selected for a context-menu command.
     case kind*: CommandTargetKind ## User or message discriminator.
     of ctkUser:
-      targetUserId*: UserId       ## Selected user snowflake.
+      targetUserId*: UserId ## Selected user snowflake.
     of ctkMessage:
       targetMessageId*: MessageId ## Selected message snowflake.
 
   CommandInvocation* = object ## Transport-independent dispatcher input.
-    name*: string       ## Command name supplied by the interaction router.
-    options*: JsonNode  ## Object containing Discord option values by name.
-    userId*: UserId     ## Invoking user snowflake.
+    name*: string ## Command name supplied by the interaction router.
+    options*: JsonNode ## Object containing Discord option values by name.
+    userId*: UserId ## Invoking user snowflake.
     guildId*: Option[GuildId] ## Guild snowflake when invoked in a guild.
-    context*: InvocationContext ## Installation, surface, and effective permissions.
-    target*: Option[CommandTarget] ## User or message selected by a context command.
+    context*: InvocationContext ## Installation, surface, and effective
+                                ## permissions.
+    target*: Option[CommandTarget] ## User or message selected by a context
+                                   ## command.
     resolved*: JsonNode ## Lossless resolved command entities from Discord.
 
   CommandResultKind* = enum ## Outcome returned by a generated command adapter.
-    crSucceeded,       ## The handler completed successfully.
-    crRejected,        ## Middleware or the handler rejected the invocation.
-    crInvalidOptions,  ## Option decoding or validation failed.
-    crNotFound         ## No registered command matched the invocation name.
+    crSucceeded, ## The handler completed successfully.
+    crRejected, ## Middleware or the handler rejected the invocation.
+    crInvalidOptions, ## Option decoding or validation failed.
+    crNotFound ## No registered command matched the invocation name.
 
   CommandResult* = object ## Transport-neutral result from command dispatch.
     kind*: CommandResultKind ## Outcome classification.
-    message*: string         ## Optional response or diagnostic message.
-    payload*: JsonNode       ## Optional complete Discord message data object.
+    message*: string ## Optional response or diagnostic message.
+    payload*: JsonNode ## Optional complete Discord message data object.
 
-  CommandCtx*[S] = object ## Typed command context supplied to generated handlers.
-    services*: S                  ## Application-owned dependency container.
+  CommandCtx*[S] = object ## Typed command context supplied to generated
+                          ## handlers.
+    services*: S ## Application-owned dependency container.
     invocation*: CommandInvocation ## Original transport-neutral invocation.
 
-  CommandHandler*[S] = proc (services: S;
-      invocation: CommandInvocation): Future[CommandResult] {.closure.}
-      ## Type-erased Chronos adapter generated from a typed command procedure.
+  CommandHandler*[S] = proc (
+      services: S;
+      invocation: CommandInvocation
+    ): Future[CommandResult] {.closure.} ## Type-erased Chronos adapter
+                                        ## generated from a typed command
+                                        ## procedure.
 
   CommandSet*[S] = object ## Explicit registry produced by `commandSet`.
     schemas: seq[CommandSpec]

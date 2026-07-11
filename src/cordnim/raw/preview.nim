@@ -2,4 +2,5 @@
 ##
 ## Cordnim does not mix preview operations into the stable route registry.
 
-const discordPreviewSchemaAvailable* = false ## Whether this build includes an opt-in preview snapshot.
+const discordPreviewSchemaAvailable* = false ## Whether this build includes an
+  ## opt-in preview snapshot.

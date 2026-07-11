@@ -11,50 +11,41 @@ import cordnim/core/secrets
 import ./[opcodes, session]
 
 type
-  GatewayPayloadError* = object of ValueError
-    ## Recoverable error raised for a malformed Gateway JSON payload.
+  GatewayPayloadError* = object of ValueError ## Malformed Gateway JSON
+    ## payload.
 
-  GatewaySessionId* = distinct string
-    ## Non-empty Discord Gateway session identifier used by Resume.
+  GatewaySessionId* = distinct string ## Non-empty Gateway session ID used by
+    ## Resume.
 
-  GatewayEventName* = distinct string
-    ## Open dispatch event-name domain that accepts future event names.
+  GatewayEventName* = distinct string ## Open dispatch event-name domain.
 
-  GatewayShard* = object
-    ## Validated `(shard_id, num_shards)` pair used by Identify.
+  GatewayShard* = object ## Validated Identify shard pair.
     shardId*: ShardId ## Zero-based shard identifier.
     totalShards*: uint16 ## Positive total number of shards.
 
-  GatewayIdentifyProperties* = object
-    ## Client metadata sent in the Identify `properties` object.
+  GatewayIdentifyProperties* = object ## Identify client metadata.
     os*: string ## Operating-system name.
     browser*: string ## Library name reported as the browser.
     device*: string ## Library name reported as the device.
-    unknownFields*: JsonNode
-      ## Object containing unrecognized connection-property fields.
+    unknownFields*: JsonNode ## Unrecognized connection-property fields.
 
-  GatewayWireExtras* = object
-    ## Unknown fields retained while projecting a typed Gateway payload.
+  GatewayWireExtras* = object ## Unknown fields retained by typed projections.
     envelope*: JsonNode ## Unknown fields from the outer Gateway envelope.
     data*: JsonNode ## Unknown fields from an object-valued `d` field.
 
-  GatewayHelloPayload* = object
-    ## Opcode 10 payload containing the heartbeat interval.
+  GatewayHelloPayload* = object ## Opcode 10 heartbeat configuration.
     heartbeatIntervalMs*: int64 ## Positive heartbeat interval in milliseconds.
     extras*: GatewayWireExtras ## Forward-compatible unknown fields.
 
-  GatewayHeartbeatPayload* = object
-    ## Opcode 1 payload carrying the latest dispatch sequence, if any.
+  GatewayHeartbeatPayload* = object ## Opcode 1 dispatch-sequence heartbeat.
     sequence*: Option[GatewaySequence] ## `none` serializes as JSON null.
     extras*: GatewayWireExtras ## Forward-compatible envelope fields.
 
-  GatewayHeartbeatAckPayload* = object
-    ## Opcode 11 acknowledgement of a client heartbeat.
+  GatewayHeartbeatAckPayload* = object ## Opcode 11 heartbeat acknowledgement.
     dataPresent*: bool ## Whether the input explicitly contained `"d": null`.
     extras*: GatewayWireExtras ## Forward-compatible envelope fields.
 
-  GatewayIdentifyPayload* = object
-    ## Opcode 2 client handshake payload.
+  GatewayIdentifyPayload* = object ## Opcode 2 client handshake payload.
     token*: Secret[BotToken] ## Bot token, redacted by normal renderers.
     properties*: GatewayIdentifyProperties ## Required client metadata.
     compress*: Option[bool] ## Optional per-payload compression request.
@@ -64,37 +55,32 @@ type
     intents*: uint64 ## Non-negative Gateway intent bit mask.
     extras*: GatewayWireExtras ## Forward-compatible unknown fields.
 
-  GatewayResumePayload* = object
-    ## Opcode 6 client request to resume an existing session.
+  GatewayResumePayload* = object ## Opcode 6 session-resume request.
     token*: Secret[BotToken] ## Bot token, redacted by normal renderers.
     sessionId*: GatewaySessionId ## Session selected for resumption.
     sequence*: GatewaySequence ## Last non-negative dispatch sequence.
     extras*: GatewayWireExtras ## Forward-compatible unknown fields.
 
-  GatewayDispatchPayload* = object
-    ## Opcode 0 event envelope with intentionally raw event data.
+  GatewayDispatchPayload* = object ## Opcode 0 envelope with raw event data.
     sequence*: GatewaySequence ## Non-negative sequence used for Resume.
     eventName*: GatewayEventName ## Known or future Discord event name.
     data*: JsonNode ## Complete `d` value for downstream event decoding.
     unknownFields*: JsonNode ## Unknown outer-envelope fields.
 
-  GatewayReconnectPayload* = object
-    ## Opcode 7 server request to reconnect and attempt Resume.
+  GatewayReconnectPayload* = object ## Opcode 7 reconnect-and-resume request.
     dataPresent*: bool ## Whether the input explicitly contained `"d": null`.
     extras*: GatewayWireExtras ## Forward-compatible envelope fields.
 
-  GatewayInvalidSessionPayload* = object
-    ## Opcode 9 notice indicating whether the session may be resumed.
+  GatewayInvalidSessionPayload* = object ## Opcode 9 invalid-session notice.
     resumable*: bool ## Server-provided resumption hint.
     extras*: GatewayWireExtras ## Forward-compatible envelope fields.
 
-  GatewayOtherPayload* = object
-    ## Unsupported or future opcode retained without interpreting its data.
+  GatewayOtherPayload* = object ## Uninterpreted future or unsupported opcode.
     opcode*: GatewayOpcode ## Open opcode value from the wire.
     raw*: JsonNode ## Complete original JSON object.
 
-  GatewayPayloadKind* {.pure.} = enum
-    ## Typed classification produced by `decodeGatewayPayload`.
+  GatewayPayloadKind* {.pure.} = enum ## Classification from
+    ## `decodeGatewayPayload`.
     Dispatch, ## Opcode 0 dispatch event.
     Heartbeat, ## Opcode 1 heartbeat.
     Identify, ## Opcode 2 identify request.
@@ -105,8 +91,7 @@ type
     HeartbeatAck, ## Opcode 11 heartbeat acknowledgement.
     Other ## Unsupported or future opcode.
 
-  GatewayPayload* = object
-    ## Closed projection of lifecycle payloads with an open `Other` case.
+  GatewayPayload* = object ## Lifecycle projection with an open `Other` case.
     case kind*: GatewayPayloadKind ## Selects the typed payload projection.
     of GatewayPayloadKind.Dispatch:
       dispatch*: GatewayDispatchPayload ## Dispatch event projection.
@@ -119,13 +104,11 @@ type
     of GatewayPayloadKind.Reconnect:
       reconnect*: GatewayReconnectPayload ## Reconnect projection.
     of GatewayPayloadKind.InvalidSession:
-      invalidSession*: GatewayInvalidSessionPayload
-        ## Invalid-session projection.
+      invalidSession*: GatewayInvalidSessionPayload ## Invalid session.
     of GatewayPayloadKind.Hello:
       hello*: GatewayHelloPayload ## Hello projection.
     of GatewayPayloadKind.HeartbeatAck:
-      heartbeatAck*: GatewayHeartbeatAckPayload
-        ## Heartbeat acknowledgement projection.
+      heartbeatAck*: GatewayHeartbeatAckPayload ## Heartbeat acknowledgement.
     of GatewayPayloadKind.Other:
       other*: GatewayOtherPayload ## Lossless unrecognized projection.
 
@@ -169,12 +152,7 @@ proc unknownObjectFields(
   node.requireObject("gateway payload")
   result = newJObject()
   for name, value in node:
-    var known = false
-    for knownName in knownNames:
-      if name == knownName:
-        known = true
-        break
-    if not known:
+    if name notin knownNames:
       result[name] = value.copy()
 
 proc objectFromExtras(extras: JsonNode; path: string): JsonNode =

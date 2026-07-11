@@ -13,10 +13,10 @@ import ./[request, scheduler]
 
 type
   TransportResponse* = object ## Response returned by a concrete HTTP adapter.
-    status*: int                 ## HTTP status code.
+    status*: int ## HTTP status code.
     headers*: seq[(string, string)] ## Response headers after redaction policy.
-    body*: seq[byte]             ## Response body bytes.
-    rateLimit*: RateLimitUpdate  ## Parsed Discord rate-limit headers.
+    body*: seq[byte] ## Response body bytes.
+    rateLimit*: RateLimitUpdate ## Parsed Discord rate-limit headers.
 
   RestTransport* = proc(request: RawRequest): Future[TransportResponse]
     {.gcsafe, raises: [].} ## Async HTTP adapter invoked after scheduling.
@@ -58,9 +58,11 @@ proc settleRejections(client: ChronosRestClient) =
   for rejection in client.scheduler.takeRejections():
     case rejection.kind
     of rjkCancelled:
-      client.failPending(rejection.id, "REST request was cancelled before dispatch")
+      client.failPending(rejection.id,
+        "REST request was cancelled before dispatch")
     of rjkDeadlineExpired:
-      client.failPending(rejection.id, "REST request deadline expired before dispatch")
+      client.failPending(rejection.id,
+        "REST request deadline expired before dispatch")
 
 func shouldRetry(response: TransportResponse,
                  request: RawRequest): bool =

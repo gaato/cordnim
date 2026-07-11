@@ -1,8 +1,8 @@
 ## Separate Legacy and Components V2 message models.
 ##
 ## `MessageDraft[V2]` intentionally has no `content`, `embeds`, `poll`, or
-## `stickers` field. Moving a handle from Legacy to V2 is explicit and no reverse
-## operation is provided.
+## `stickers` field. Moving a handle from Legacy to V2 is explicit and no
+## reverse operation is provided.
 
 import std/options
 
@@ -10,98 +10,100 @@ import cordnim/core/ids
 
 type
   Legacy* = object ## Phantom type for a legacy Discord message.
-  V2* = object     ## Phantom type for a Components V2 Discord message.
+  V2* = object ## Phantom type for a Components V2 Discord message.
 
   MessageComponentKind* = enum ## High-level Components V2 node kinds.
-    mckActionRow,        ## Row containing buttons or exactly one select.
-    mckButton,           ## Interactive or URL button.
-    mckStringSelect,     ## String-valued select menu.
-    mckUserSelect,       ## User select menu.
-    mckRoleSelect,       ## Role select menu.
+    mckActionRow, ## Row containing buttons or exactly one select.
+    mckButton, ## Interactive or URL button.
+    mckStringSelect, ## String-valued select menu.
+    mckUserSelect, ## User select menu.
+    mckRoleSelect, ## Role select menu.
     mckMentionableSelect, ## User-or-role select menu.
-    mckChannelSelect,    ## Channel select menu.
-    mckSection,          ## Text displays plus exactly one accessory.
-    mckTextDisplay,      ## Markdown text block.
-    mckThumbnail,        ## Section thumbnail accessory.
-    mckMediaGallery,     ## Gallery containing media items.
-    mckMediaItem,        ## One media item within a gallery.
-    mckFile,             ## Uploaded file reference.
-    mckSeparator,        ## Visual separator and optional spacing.
-    mckContainer         ## Styled group of Components V2 children.
+    mckChannelSelect, ## Channel select menu.
+    mckSection, ## Text displays plus exactly one accessory.
+    mckTextDisplay, ## Markdown text block.
+    mckThumbnail, ## Section thumbnail accessory.
+    mckMediaGallery, ## Gallery containing media items.
+    mckMediaItem, ## One media item within a gallery.
+    mckFile, ## Uploaded file reference.
+    mckSeparator, ## Visual separator and optional spacing.
+    mckContainer ## Styled group of Components V2 children.
 
   ButtonStyle* = enum ## Discord button presentation and behavior.
-    bsPrimary = 1,     ## Blurple interactive button.
-    bsSecondary = 2,   ## Grey interactive button.
-    bsSuccess = 3,     ## Green interactive button.
-    bsDanger = 4,      ## Red interactive button.
-    bsLink = 5,        ## URL button without `custom_id`.
-    bsPremium = 6      ## SKU purchase button.
+    bsPrimary = 1, ## Blurple interactive button.
+    bsSecondary = 2, ## Grey interactive button.
+    bsSuccess = 3, ## Green interactive button.
+    bsDanger = 4, ## Red interactive button.
+    bsLink = 5, ## URL button without `custom_id`.
+    bsPremium = 6 ## SKU purchase button.
 
   SeparatorSpacing* = enum ## Vertical space around a V2 separator.
-    ssSmall = 1,              ## Compact separator spacing.
-    ssLarge = 2               ## Expanded separator spacing.
+    ssSmall = 1, ## Compact separator spacing.
+    ssLarge = 2 ## Expanded separator spacing.
 
   MessageChannelType* = enum ## Channel kinds accepted by a channel select.
-    mctGuildText = 0,         ## Guild text channel.
-    mctDm = 1,                ## Direct-message channel.
-    mctGuildVoice = 2,        ## Guild voice channel.
-    mctGroupDm = 3,           ## Group direct-message channel.
-    mctGuildCategory = 4,     ## Guild category.
+    mctGuildText = 0, ## Guild text channel.
+    mctDm = 1, ## Direct-message channel.
+    mctGuildVoice = 2, ## Guild voice channel.
+    mctGroupDm = 3, ## Group direct-message channel.
+    mctGuildCategory = 4, ## Guild category.
     mctGuildAnnouncement = 5, ## Guild announcement channel.
     mctAnnouncementThread = 10, ## Announcement thread.
-    mctPublicThread = 11,     ## Public thread.
-    mctPrivateThread = 12,    ## Private thread.
-    mctGuildStageVoice = 13,  ## Guild stage channel.
-    mctGuildDirectory = 14,   ## Guild directory channel.
-    mctGuildForum = 15,       ## Guild forum channel.
-    mctGuildMedia = 16        ## Guild media channel.
+    mctPublicThread = 11, ## Public thread.
+    mctPrivateThread = 12, ## Private thread.
+    mctGuildStageVoice = 13, ## Guild stage channel.
+    mctGuildDirectory = 14, ## Guild directory channel.
+    mctGuildForum = 15, ## Guild forum channel.
+    mctGuildMedia = 16 ## Guild media channel.
 
   ComponentEmoji* = object ## Emoji displayed on a button or string option.
-    id*: Option[EmojiId]     ## Custom emoji ID, absent for Unicode emoji.
-    name*: string            ## Custom emoji name or Unicode glyph.
-    animated*: bool          ## Whether a custom emoji is animated.
+    id*: Option[EmojiId] ## Custom emoji ID, absent for Unicode emoji.
+    name*: string ## Custom emoji name or Unicode glyph.
+    animated*: bool ## Whether a custom emoji is animated.
 
   SelectDefaultKind* = enum ## Entity kind encoded in a select default value.
-    sdkUser,                 ## User-select default.
-    sdkRole,                 ## Role-select default.
-    sdkChannel               ## Channel-select default.
+    sdkUser, ## User-select default.
+    sdkRole, ## Role-select default.
+    sdkChannel ## Channel-select default.
 
-  SelectDefaultValue* = object ## Typed initial value for an auto-populated select.
+  SelectDefaultValue* = object ## Typed initial value for an auto-populated
+                               ## select.
     case kind*: SelectDefaultKind ## Discord entity category.
     of sdkUser:
-      userId*: UserId             ## Initially selected user.
+      userId*: UserId ## Initially selected user.
     of sdkRole:
-      roleId*: RoleId             ## Initially selected role.
+      roleId*: RoleId ## Initially selected role.
     of sdkChannel:
-      channelId*: ChannelId       ## Initially selected channel.
+      channelId*: ChannelId ## Initially selected channel.
 
   SelectOption* = object ## One option in a string select menu.
-    label*: string        ## User-facing option label.
-    value*: string        ## Stable value delivered on selection.
-    description*: string  ## Optional supporting description.
-    default*: bool        ## Whether this option starts selected.
+    label*: string ## User-facing option label.
+    value*: string ## Stable value delivered on selection.
+    description*: string ## Optional supporting description.
+    default*: bool ## Whether this option starts selected.
     emoji*: Option[ComponentEmoji] ## Optional emoji displayed with the option.
 
-  ComponentNode* = ref object ## Mutable construction node validated before send.
+  ComponentNode* = ref object ## Mutable construction node validated before
+                              ## send.
     kind*: MessageComponentKind ## Node kind.
-    text*: string               ## Text, label, URL, or upload reference by kind.
-    customId*: string           ## Application-owned interaction identifier.
-    url*: string                ## URL used only by link buttons and media.
-    disabled*: bool             ## Whether an interactive component is disabled.
-    buttonStyle*: ButtonStyle   ## Button style; ignored by non-buttons.
+    text*: string ## Text, label, URL, or upload reference by kind.
+    customId*: string ## Application-owned interaction identifier.
+    url*: string ## URL used only by link buttons and media.
+    disabled*: bool ## Whether an interactive component is disabled.
+    buttonStyle*: ButtonStyle ## Button style; ignored by non-buttons.
     emoji*: Option[ComponentEmoji] ## Button emoji, when present.
-    skuId*: Option[SkuId]       ## SKU used only by a premium button.
-    placeholder*: string        ## Select placeholder text.
-    minValues*: int             ## Minimum select values.
-    maxValues*: int             ## Maximum select values.
-    required*: Option[bool]     ## Explicit select requiredness when supported.
+    skuId*: Option[SkuId] ## SKU used only by a premium button.
+    placeholder*: string ## Select placeholder text.
+    minValues*: int ## Minimum select values.
+    maxValues*: int ## Maximum select values.
+    required*: Option[bool] ## Explicit select requiredness when supported.
     options*: seq[SelectOption] ## String-select choices.
     defaultValues*: seq[SelectDefaultValue] ## Auto-populated select defaults.
     channelTypes*: seq[MessageChannelType] ## Channel-select type restriction.
-    description*: string        ## Alternative text for media components.
-    spoiler*: bool              ## Media, file, or container spoiler state.
-    accentColor*: Option[int]   ## Container RGB accent in `0x000000..0xffffff`.
-    divider*: Option[bool]      ## Separator divider visibility override.
+    description*: string ## Alternative text for media components.
+    spoiler*: bool ## Media, file, or container spoiler state.
+    accentColor*: Option[int] ## Container RGB accent in `0x000000..0xffffff`.
+    divider*: Option[bool] ## Separator divider visibility override.
     spacing*: Option[SeparatorSpacing] ## Separator spacing override.
     children*: seq[ComponentNode] ## Ordered child nodes.
 
@@ -109,18 +111,20 @@ type
     content*: Option[string] ## Message text.
     embedsJson*: seq[string] ## Raw serialized embeds retained by the alpha API.
     pollJson*: Option[string] ## Raw serialized poll retained by the alpha API.
-    stickers*: seq[string]    ## Sticker snowflakes as decimal strings.
+    stickers*: seq[string] ## Sticker snowflakes as decimal strings.
 
   V2Payload* = object ## Root component tree for a Components V2 message.
     children*: seq[ComponentNode] ## Valid root-level nodes.
 
-  MessageDraft*[Mode: Legacy | V2] = object ## Message under construction for one wire mode.
+  MessageDraft*[Mode: Legacy | V2] = object ## Message under construction for
+                                            ## one wire mode.
     when Mode is Legacy:
       legacy*: LegacyPayload ## Legacy-only payload.
     else:
       v2*: V2Payload ## Components V2-only payload.
 
-  MessageHandle*[Mode: Legacy | V2] = object ## Existing message whose mode is known statically.
+  MessageHandle*[Mode: Legacy | V2] = object ## Existing message whose mode is
+                                             ## known statically.
     channelId*: ChannelId ## Channel containing the message.
     messageId*: MessageId ## Existing message snowflake.
 
@@ -233,7 +237,8 @@ func stringSelect*(customId: string, options: openArray[SelectOption],
 func userSelect*(customId: string, placeholder = "", minValues = 1,
                  maxValues = 1, disabled = false,
                  defaults: seq[SelectDefaultValue] = @[]): ComponentNode =
-  ## Creates a user select menu.
+  ## Creates a user select; `validate` requires every default to come from
+  ## `defaultUser` and checks selection bounds.
   component(mckUserSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
     defaultValues = defaults)
@@ -241,15 +246,18 @@ func userSelect*(customId: string, placeholder = "", minValues = 1,
 func roleSelect*(customId: string, placeholder = "", minValues = 1,
                  maxValues = 1, disabled = false,
                  defaults: seq[SelectDefaultValue] = @[]): ComponentNode =
-  ## Creates a role select menu.
+  ## Creates a role select; `validate` requires every default to come from
+  ## `defaultRole` and checks selection bounds.
   component(mckRoleSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
     defaultValues = defaults)
 
 func mentionableSelect*(customId: string, placeholder = "", minValues = 1,
                         maxValues = 1, disabled = false,
-                        defaults: seq[SelectDefaultValue] = @[]): ComponentNode =
-  ## Creates a user-or-role select menu.
+                        defaults: seq[SelectDefaultValue] = @[]):
+                        ComponentNode =
+  ## Creates a mentionable select; defaults may come from `defaultUser` or
+  ## `defaultRole`, with bounds checked by `validate`.
   component(mckMentionableSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
     defaultValues = defaults)
@@ -257,8 +265,10 @@ func mentionableSelect*(customId: string, placeholder = "", minValues = 1,
 func channelSelect*(customId: string, placeholder = "", minValues = 1,
                     maxValues = 1, disabled = false,
                     defaults: seq[SelectDefaultValue] = @[],
-                    channelTypes: seq[MessageChannelType] = @[]): ComponentNode =
-  ## Creates a channel select menu.
+                    channelTypes: seq[MessageChannelType] = @[]):
+                    ComponentNode =
+  ## Creates a channel select; defaults must come from `defaultChannel`, and an
+  ## empty `channelTypes` leaves Discord unfiltered.
   component(mckChannelSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
     defaultValues = defaults, channelTypes = channelTypes)
@@ -272,13 +282,15 @@ func section*(children: varargs[ComponentNode]): ComponentNode =
   component(mckSection, children = @children)
 
 func thumbnail*(url: string, description = "", spoiler = false): ComponentNode =
-  ## Creates a thumbnail accessory.
+  ## Creates a thumbnail that `validate` accepts only as the single accessory
+  ## of a section.
   component(mckThumbnail, url = url, description = description,
     spoiler = spoiler)
 
 func separator*(spacing = none(SeparatorSpacing),
                 divider = none(bool)): ComponentNode =
-  ## Creates a Components V2 separator.
+  ## Creates a separator, omitting `spacing` or `divider` when their options
+  ## are unset.
   component(mckSeparator, spacing = spacing, divider = divider)
 
 func mediaItem*(url: string, description = "", spoiler = false): ComponentNode =
@@ -287,7 +299,8 @@ func mediaItem*(url: string, description = "", spoiler = false): ComponentNode =
     spoiler = spoiler)
 
 func mediaGallery*(children: varargs[ComponentNode]): ComponentNode =
-  ## Creates a media gallery.
+  ## Creates a gallery that `validate` restricts to one through ten `mediaItem`
+  ## children.
   component(mckMediaGallery, children = @children)
 
 func fileComponent*(uploadReference: string, spoiler = false): ComponentNode =

@@ -2,7 +2,8 @@
 
 import ./session
 
-const identifyBucketIntervalMs* = 5_000'i64 ## Minimum interval between IDENTIFYs in one concurrency bucket.
+const identifyBucketIntervalMs* = 5_000'i64 ## Minimum interval between
+  ## IDENTIFYs in one concurrency bucket.
 
 type
   SessionStartLimit* = object ## Discord's `/gateway/bot` session-start limits.
@@ -18,18 +19,20 @@ type
     nextAvailableAtMs*: int64 ## Earliest next IDENTIFY time for this bucket.
 
   IdentifyAcquireKind* = enum ## Outcome of a non-blocking IDENTIFY reservation.
-    identifyAcquired,          ## A lease was issued and budget consumed.
-    identifyBudgetExhausted,  ## Global session-start allowance is exhausted.
+    identifyAcquired, ## A lease was issued and budget consumed.
+    identifyBudgetExhausted, ## Global session-start allowance is exhausted.
     identifyBucketCoolingDown ## The shard's concurrency bucket is not ready.
 
-  IdentifyAcquireResult* = object ## Lease or retry time returned by `tryAcquire`.
-    case kind*: IdentifyAcquireKind ## Discriminator selecting lease or retry data.
+  IdentifyAcquireResult* = object ## Lease or retry time from `tryAcquire`.
+    case kind*: IdentifyAcquireKind ## Selects lease or retry data.
     of identifyAcquired:
       lease*: IdentifyLease ## Reserved IDENTIFY lease.
     of identifyBudgetExhausted, identifyBucketCoolingDown:
       retryAtMs*: int64 ## Earliest monotonic time at which retry may succeed.
 
-  IdentifyCoordinator* = object ## In-memory coordinator protecting Discord IDENTIFY limits.
+  IdentifyCoordinator* = object ## In-memory coordinator protecting Discord
+    ## IDENTIFY limits. It is process-local and requires serialized mutation by
+    ## one owner; it does not coordinate tasks or processes internally.
     total: int
     remaining: int
     resetAtMs: int64
@@ -41,9 +44,15 @@ proc validate(limit: SessionStartLimit) =
   if limit.total < 0:
     raise newException(ValueError, "session start total must not be negative")
   if limit.remaining < 0 or limit.remaining > limit.total:
-    raise newException(ValueError, "session start remaining must be within total")
+    raise newException(
+      ValueError,
+      "session start remaining must be within total",
+    )
   if limit.resetAfterMs <= 0:
-    raise newException(ValueError, "session start reset duration must be greater than zero")
+    raise newException(
+      ValueError,
+      "session start reset duration must be greater than zero",
+    )
   if limit.maxConcurrency == 0:
     raise newException(ValueError, "max concurrency must be at least one")
 
@@ -75,11 +84,17 @@ proc refresh*(
   coordinator.remaining = limit.remaining
   coordinator.resetAtMs = nowMs + limit.resetAfterMs
   coordinator.resetAfterMs = limit.resetAfterMs
+  # Keep per-bucket cooldowns when the modulo topology is unchanged. Refreshing
+  # the global counters must not enable an early IDENTIFY burst in a live
+  # bucket.
   if coordinator.maxConcurrency != limit.maxConcurrency:
     coordinator.maxConcurrency = limit.maxConcurrency
     coordinator.bucketNextMs = newSeq[int64](int(limit.maxConcurrency))
 
-proc resetBudgetIfNeeded(coordinator: var IdentifyCoordinator; nowMs: int64) {.raises: [].} =
+proc resetBudgetIfNeeded(
+    coordinator: var IdentifyCoordinator;
+    nowMs: int64,
+) {.raises: [].} =
   if nowMs >= coordinator.resetAtMs:
     coordinator.remaining = coordinator.total
     coordinator.resetAtMs = nowMs + coordinator.resetAfterMs
@@ -90,6 +105,9 @@ proc tryAcquire*(
     nowMs: int64,
 ): IdentifyAcquireResult {.raises: [].} =
   ## Attempts to reserve one IDENTIFY without sleeping or exceeding limits.
+  ##
+  ## An acquired lease consumes budget permanently. Callers must not refund it
+  ## after transport failure because Discord may already have seen the request.
   coordinator.resetBudgetIfNeeded(nowMs)
   if coordinator.remaining == 0:
     return IdentifyAcquireResult(
@@ -107,6 +125,8 @@ proc tryAcquire*(
       retryAtMs: nextAt,
     )
 
+  # A reserved IDENTIFY is intentionally non-refundable: after transport starts,
+  # the client cannot prove that Discord did not consume the attempt.
   coordinator.remaining.dec
   coordinator.bucketNextMs[int(bucket)] = nowMs + identifyBucketIntervalMs
   IdentifyAcquireResult(
@@ -123,10 +143,12 @@ func remaining*(coordinator: IdentifyCoordinator): int {.inline, raises: [].} =
   ## Returns the IDENTIFY allowance left in the current window.
   coordinator.remaining
 
-func resetAtMs*(coordinator: IdentifyCoordinator): int64 {.inline, raises: [].} =
+func resetAtMs*(coordinator: IdentifyCoordinator): int64 {.
+    inline, raises: [].} =
   ## Returns the monotonic time at which local budget resets.
   coordinator.resetAtMs
 
-func maxConcurrency*(coordinator: IdentifyCoordinator): uint16 {.inline, raises: [].} =
+func maxConcurrency*(coordinator: IdentifyCoordinator): uint16 {.
+    inline, raises: [].} =
   ## Returns the number of server-defined IDENTIFY buckets.
   coordinator.maxConcurrency

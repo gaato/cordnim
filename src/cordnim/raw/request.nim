@@ -17,9 +17,11 @@ type
     headers*: seq[RawNameValue] ## Request-specific headers.
     body*: JsonNode ## JSON request body, or nil when absent.
 
-  RawResponse* = object ## Uninterpreted HTTP response returned by the transport.
+  RawResponse* = object ## Uninterpreted HTTP response returned by the
+    ## transport.
     status*: int ## HTTP status code.
-    headers*: seq[RawNameValue] ## Response headers, including rate-limit metadata.
+    headers*: seq[RawNameValue] ## Response headers, including rate-limit
+      ## metadata.
     body*: JsonNode ## Parsed JSON body, or nil when no JSON was returned.
 
 func initRawNameValue*(name, value: string): RawNameValue =
@@ -63,7 +65,7 @@ proc initRawRequest*(
 
 proc addQuery*(request: var RawRequest, name, value: string) =
   ## Appends one query parameter without silently replacing prior values.
-  request.query.add initRawNameValue(name, value)
+  request.query.add(initRawNameValue(name, value))
 
 func renderedPath*(request: RawRequest): string =
   ## Returns the API path with ordered, percent-encoded query parameters.
@@ -74,7 +76,7 @@ func renderedPath*(request: RawRequest): string =
   for item in request.query:
     pairs.add((item.name, item.value))
   result.add('?')
-  result.add encodeQuery(pairs, usePlus = false, omitEq = false)
+  result.add(encodeQuery(pairs, usePlus = false, omitEq = false))
 
 proc setHeader*(request: var RawRequest, name, value: string) =
   ## Replaces a header case-insensitively, or appends it when absent.
@@ -82,7 +84,7 @@ proc setHeader*(request: var RawRequest, name, value: string) =
     if cmpIgnoreCase(header.name, name) == 0:
       header.value = value
       return
-  request.headers.add initRawNameValue(name, value)
+  request.headers.add(initRawNameValue(name, value))
 
 func `$`*(request: RawRequest): string =
   ## Deliberately omits path values, query, headers, and body. Discord webhook

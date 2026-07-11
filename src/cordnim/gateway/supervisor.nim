@@ -1,4 +1,7 @@
 ## Pure state machines used by a supervised Gateway shard runtime.
+##
+## Lifecycle mutation procedures are transport commands, not transition
+## validators. The supervising transport owns legal call ordering.
 
 import std/options
 
@@ -6,15 +9,15 @@ import ./[close_policy, session, sharding]
 
 type
   ShardLifecycle* = enum ## Observable lifecycle phase for one Gateway shard.
-    shardStopped,    ## No connection task is active.
+    shardStopped, ## No connection task is active.
     shardConnecting, ## A WebSocket connection is being established.
     shardIdentifying, ## The shard is starting a new Discord session.
-    shardReady,      ## READY was accepted and events may be dispatched.
-    shardResuming,   ## The shard is reconnecting with a retained cursor.
+    shardReady, ## READY was accepted and events may be dispatched.
+    shardResuming, ## The shard is reconnecting with a retained cursor.
     shardBackingOff, ## A new IDENTIFY is pending scheduler permission.
-    shardTerminal    ## Reconnect requires configuration or operator action.
+    shardTerminal ## Reconnect requires configuration or operator action.
 
-  HeartbeatWatchdog* = object ## Heartbeat timing state independent of user handlers.
+  HeartbeatWatchdog* = object ## Heartbeat timing independent of user handlers.
     intervalMs*: int64 ## Server-provided heartbeat interval.
     lastSentAtMs*: Option[int64] ## Monotonic timestamp of the latest heartbeat.
     lastAckAtMs*: Option[int64] ## Monotonic timestamp of the latest valid ACK.
@@ -32,20 +35,31 @@ type
     attempt*: uint32 ## Consecutive reconnect attempt number.
     terminal*: bool ## Whether automatic reconnect must stop.
 
-  GatewaySupervisor* = object ## Collection of shard runtimes owned by one process.
+  GatewaySupervisor* = object ## Shard runtimes owned by one process.
     shards: seq[ShardRuntime]
 
 proc initHeartbeatWatchdog*(intervalMs: int64): HeartbeatWatchdog =
   ## Creates a watchdog and rejects a non-positive heartbeat interval.
   if intervalMs <= 0:
-    raise newException(ValueError, "heartbeat interval must be greater than zero")
+    raise newException(
+      ValueError,
+      "heartbeat interval must be greater than zero",
+    )
   HeartbeatWatchdog(intervalMs: intervalMs)
 
-proc heartbeatSent*(watchdog: var HeartbeatWatchdog; nowMs: int64) {.raises: [].} =
+proc heartbeatSent*(watchdog: var HeartbeatWatchdog; nowMs: int64) {.
+    raises: [].} =
   ## Records transmission of a heartbeat at a monotonic timestamp.
+  ##
+  ## The caller must check `heartbeatTimedOut` before recording a later send;
+  ## only the latest transmission time is retained.
+  # Only the latest send is retained. The supervising loop must check timeout
+  # state before recording a later heartbeat, or it can hide an unacknowledged
+  # earlier send.
   watchdog.lastSentAtMs = some(nowMs)
 
-proc heartbeatAcked*(watchdog: var HeartbeatWatchdog; nowMs: int64): bool {.raises: [].} =
+proc heartbeatAcked*(watchdog: var HeartbeatWatchdog; nowMs: int64): bool {.
+    raises: [].} =
   ## Records a valid ACK and RTT, returning false for impossible timestamps.
   if watchdog.lastSentAtMs.isNone or nowMs < watchdog.lastSentAtMs.get:
     return false
@@ -53,15 +67,20 @@ proc heartbeatAcked*(watchdog: var HeartbeatWatchdog; nowMs: int64): bool {.rais
   watchdog.lastRttMs = some(nowMs - watchdog.lastSentAtMs.get)
   true
 
-func heartbeatTimedOut*(watchdog: HeartbeatWatchdog; nowMs: int64): bool {.raises: [].} =
-  ## Tests whether the latest heartbeat remained unacknowledged for one interval.
+func heartbeatTimedOut*(watchdog: HeartbeatWatchdog; nowMs: int64): bool {.
+    raises: [].} =
+  ## Tests whether the latest heartbeat lacked an ACK for one interval.
   if watchdog.lastSentAtMs.isNone:
     return false
   let sentAt = watchdog.lastSentAtMs.get
-  let unacknowledged = watchdog.lastAckAtMs.isNone or watchdog.lastAckAtMs.get < sentAt
+  let unacknowledged = watchdog.lastAckAtMs.isNone or
+    watchdog.lastAckAtMs.get < sentAt
   unacknowledged and nowMs - sentAt >= watchdog.intervalMs
 
-proc initShardRuntime*(shardId: ShardId; heartbeatIntervalMs: int64): ShardRuntime =
+proc initShardRuntime*(
+    shardId: ShardId;
+    heartbeatIntervalMs: int64,
+): ShardRuntime =
   ## Creates stopped runtime state for one shard.
   ShardRuntime(
     shardId: shardId,
@@ -125,7 +144,8 @@ func len*(supervisor: GatewaySupervisor): int {.inline, raises: [].} =
   ## Returns the number of shards owned by the supervisor.
   supervisor.shards.len
 
-func contains*(supervisor: GatewaySupervisor; shardId: ShardId): bool {.raises: [].} =
+func contains*(supervisor: GatewaySupervisor; shardId: ShardId): bool {.
+    raises: [].} =
   ## Tests whether the supervisor owns `shardId`.
   for value in supervisor.shards:
     if value.shardId == shardId:

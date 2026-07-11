@@ -5,27 +5,26 @@
 
 import std/[strutils, tables]
 
-const DefaultReplayCacheEntries* = 65_536
-  ## Default number of accepted signatures retained inside the replay window.
+const DefaultReplayCacheEntries* = 65_536 ## Default number of accepted
+  ## signatures retained inside the replay window.
 
 type
   InteractionVerificationKind* = enum ## Request-verification outcome.
-    ivValid,                  ## Signature, timestamp, and replay checks passed.
-    ivMalformedTimestamp,     ## Timestamp header is not a signed integer.
+    ivValid, ## Signature, timestamp, and replay checks passed.
+    ivMalformedTimestamp, ## Timestamp header is not a signed integer.
     ivTimestampOutsideWindow, ## Timestamp is outside the accepted clock skew.
-    ivMalformedSignature,     ## Signature header is not 64-byte hexadecimal.
-    ivSignatureRejected,      ## Ed25519 verification rejected the message.
-    ivReplay,                 ## Signature was seen or the cache failed closed.
-    ivBodyTooLarge,           ## Body exceeds the configured byte limit.
-    ivVerifierUnavailable     ## No Ed25519 provider was configured.
+    ivMalformedSignature, ## Signature header is not 64-byte hexadecimal.
+    ivSignatureRejected, ## Ed25519 verification rejected the message.
+    ivReplay, ## Signature was seen or the cache failed closed.
+    ivBodyTooLarge, ## Body exceeds the configured byte limit.
+    ivVerifierUnavailable ## No Ed25519 provider was configured.
 
   InteractionVerification* = object ## Result of validating an HTTP request.
     kind*: InteractionVerificationKind ## Terminal verification outcome.
     timestamp*: int64 ## Parsed Unix timestamp when parsing succeeded.
 
   Ed25519Verifier* = proc(publicKey, signature, message: openArray[byte]): bool
-    {.gcsafe, raises: [].}
-    ## Pluggable detached Ed25519 verification boundary.
+    {.gcsafe, raises: [].} ## Pluggable detached Ed25519 verification boundary.
 
   ReplayCache* = object ## Bounded in-memory cache of accepted signatures.
     entries: Table[string, int64]
@@ -51,7 +50,7 @@ func fromHexNibble(value: char): int =
 func decodeSignature(value: string, destination: var array[64, byte]): bool =
   if value.len != destination.len * 2:
     return false
-  for index in 0 ..< destination.len:
+  for index in 0..<destination.len:
     let high = fromHexNibble(value[index * 2])
     let low = fromHexNibble(value[index * 2 + 1])
     if high < 0 or low < 0:
@@ -119,16 +118,25 @@ proc verifyInteractionRequest*(config: VerificationConfig,
 
   var signature: array[64, byte]
   if not signatureHex.decodeSignature(signature):
-    return InteractionVerification(kind: ivMalformedSignature, timestamp: timestamp)
+    return InteractionVerification(
+      kind: ivMalformedSignature,
+      timestamp: timestamp
+    )
   if config.verifier.isNil:
-    return InteractionVerification(kind: ivVerifierUnavailable, timestamp: timestamp)
+    return InteractionVerification(
+      kind: ivVerifierUnavailable,
+      timestamp: timestamp
+    )
 
   var message = newSeqOfCap[byte](timestampText.len + body.len)
   for value in timestampText:
-    message.add byte(ord(value))
+    message.add(byte(ord(value)))
   message.add body
   if not config.verifier(config.publicKey, signature, message):
-    return InteractionVerification(kind: ivSignatureRejected, timestamp: timestamp)
+    return InteractionVerification(
+      kind: ivSignatureRejected,
+      timestamp: timestamp
+    )
 
   cache.purgeExpired(nowUnixSeconds.oldestAcceptedTimestamp(
     config.allowedSkewSeconds))

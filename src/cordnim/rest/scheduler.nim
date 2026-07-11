@@ -9,13 +9,13 @@ import std/[algorithm, hashes, options, tables]
 import ./request
 
 type
-  ScheduledRequestId* = distinct uint64
-    ## Process-local identity assigned when a request enters the scheduler.
+  ScheduledRequestId* = distinct uint64 ## Process-local identity assigned when
+    ## a request enters the scheduler.
 
   RateLimitScope* = enum ## Discord scope reported for a rate limit.
-    rlsUser,   ## Limit applies to the current bot or user identity.
+    rlsUser, ## Limit applies to the current bot or user identity.
     rlsShared, ## Limit is shared by a resource such as a webhook.
-    rlsGlobal  ## Limit blocks every request for the current identity.
+    rlsGlobal ## Limit blocks every request for the current identity.
 
   RateLimitUpdate* = object ## Rate-limit facts learned from one response.
     bucketId*: Option[string] ## Discord's opaque bucket identifier.
@@ -43,8 +43,8 @@ type
     queue: seq[QueueEntry]
     inFlight: int
 
-  Scheduler* = object
-    ## Deterministic mutable state for all REST buckets and queued requests.
+  Scheduler* = object ## Deterministic mutable state for all REST buckets and
+    ## queued requests.
     nextId: uint64
     nextSequence: uint64
     routeBuckets: Table[string, string]
@@ -54,8 +54,8 @@ type
     rejections: seq[RejectedRequest]
 
   RejectionKind* = enum ## Reason a queued request was never dispatched.
-    rjkCancelled,       ## Its cancellation group was cancelled.
-    rjkDeadlineExpired  ## Its dispatch deadline passed in the queue.
+    rjkCancelled, ## Its cancellation group was cancelled.
+    rjkDeadlineExpired ## Its dispatch deadline passed in the queue.
 
   RejectedRequest* = object ## Terminal rejection returned to the driver.
     id*: ScheduledRequestId ## Identity of the rejected request.
@@ -63,11 +63,11 @@ type
 
   TakeKind* = enum ## Outcome of polling the deterministic scheduler.
     tkReady, ## A request may be dispatched immediately.
-    tkIdle,  ## No queued request requires a wake-up.
-    tkWait   ## A request may become eligible at a known instant.
+    tkIdle, ## No queued request requires a wake-up.
+    tkWait ## A request may become eligible at a known instant.
 
   TakeResult* = object ## Variant returned by `takeReady`.
-    case kind*: TakeKind
+    case kind*: TakeKind ## Poll outcome selecting the active result variant.
     of tkReady:
       request*: ScheduledRequest ## Request whose bucket is now reserved.
     of tkWait:
@@ -109,6 +109,8 @@ func isExpired(request: RawRequest, now: MonoMillis): bool =
   request.meta.deadline.isSome and request.meta.deadline.get() <= now
 
 func entryCmp(a, b: QueueEntry): int =
+  # Readiness gates dispatch first. Priority and deadline then reduce latency,
+  # while sequence is the final FIFO tie-breaker that prevents reordering peers.
   if a.readyAt != b.readyAt:
     return if a.readyAt < b.readyAt: -1 else: 1
   if a.request.request.meta.priority != b.request.request.meta.priority:
@@ -116,7 +118,8 @@ func entryCmp(a, b: QueueEntry): int =
       b.request.request.meta.priority)
   let aDeadline = a.request.request.meta.deadline
   let bDeadline = b.request.request.meta.deadline
-  if aDeadline.isSome and bDeadline.isSome and aDeadline.get() != bDeadline.get():
+  if aDeadline.isSome and bDeadline.isSome and
+      aDeadline.get() != bDeadline.get():
     return if aDeadline.get() < bDeadline.get(): -1 else: 1
   if aDeadline.isSome != bDeadline.isSome:
     return if aDeadline.isSome: -1 else: 1
@@ -132,11 +135,11 @@ proc enqueue*(scheduler: var Scheduler, request: sink RawRequest,
   inc scheduler.nextId
   let bucketName = scheduler.bucketFor(request.route)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
-  bucket.queue.add QueueEntry(
+  bucket.queue.add(QueueEntry(
     request: ScheduledRequest(id: id, request: request, attempt: 1),
     sequence: scheduler.nextSequence,
     readyAt: now
-  )
+  ))
   inc scheduler.nextSequence
   bucket.sortQueue()
   scheduler.buckets[bucketName] = move bucket
@@ -165,15 +168,15 @@ proc discardInvalid(scheduler: var Scheduler, bucket: var BucketState,
   var kept: seq[QueueEntry]
   for entry in bucket.queue:
     if scheduler.isCancelled(entry.request.request):
-      scheduler.rejections.add RejectedRequest(
+      scheduler.rejections.add(RejectedRequest(
         id: entry.request.id,
         kind: rjkCancelled
-      )
+      ))
     elif entry.request.request.isExpired(now):
-      scheduler.rejections.add RejectedRequest(
+      scheduler.rejections.add(RejectedRequest(
         id: entry.request.id,
         kind: rjkDeadlineExpired
-      )
+      ))
     else:
       kept.add entry
   bucket.queue = move kept
@@ -197,30 +200,28 @@ proc takeReady*(scheduler: var Scheduler, now: MonoMillis): TakeResult =
   for bucketName, storedBucket in scheduler.buckets.mpairs:
     storedBucket.refreshBucket(now)
     scheduler.discardInvalid(storedBucket, now)
-    if storedBucket.queue.len == 0:
-      continue
-    if storedBucket.inFlight > 0:
+    if storedBucket.queue.len > 0 and storedBucket.inFlight == 0:
       # Each learned Discord bucket is serialized. Different buckets still run
       # concurrently in the Chronos driver, and this conservative rule avoids
       # racing multiple first requests before Discord reveals their limit.
-      continue
-    storedBucket.sortQueue()
-    let entry = storedBucket.queue[0]
-    let ready = storedBucket.availableAt(entry, now)
-    if ready > now:
-      if earliest.isNone or ready < earliest.get():
-        earliest = some(ready)
-      continue
-    if not found or entry.entryCmp(chosenEntry) < 0:
-      found = true
-      chosenBucket = bucketName
-      chosenEntry = entry
+      storedBucket.sortQueue()
+      let entry = storedBucket.queue[0]
+      let ready = storedBucket.availableAt(entry, now)
+      if ready > now:
+        if earliest.isNone or ready < earliest.get():
+          earliest = some(ready)
+      elif not found or entry.entryCmp(chosenEntry) < 0:
+        found = true
+        chosenBucket = bucketName
+        chosenEntry = entry
 
   if not found:
     if earliest.isSome:
       return TakeResult(kind: tkWait, wakeAt: earliest.get())
     return TakeResult(kind: tkIdle)
 
+  # Reserve before returning so another poll cannot oversubscribe this bucket.
+  # `complete` releases `inFlight` and reconciles remaining with server headers.
   var bucket = scheduler.buckets.getOrDefault(chosenBucket)
   bucket.queue.delete(0)
   inc bucket.inFlight
@@ -232,6 +233,9 @@ proc takeReady*(scheduler: var Scheduler, now: MonoMillis): TakeResult =
 proc mergeBuckets(scheduler: var Scheduler, fromName, toName: string) =
   if fromName == toName:
     return
+  # The first response can replace a provisional route bucket with Discord's
+  # bucket ID. Carry its queue and active reservations into the learned bucket;
+  # facts already learned there win, while the provisional state fills gaps.
   var destination = scheduler.buckets.getOrDefault(toName)
   if scheduler.buckets.hasKey(fromName):
     let source = scheduler.buckets.getOrDefault(fromName)
@@ -288,7 +292,7 @@ proc retry*(scheduler: var Scheduler, scheduled: sink ScheduledRequest,
   let bucketName = scheduler.bucketFor(scheduled.request.route)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
   let nextAttempt = scheduled.attempt + 1
-  bucket.queue.add QueueEntry(
+  bucket.queue.add(QueueEntry(
     request: ScheduledRequest(
       id: scheduled.id,
       request: scheduled.request,
@@ -296,7 +300,7 @@ proc retry*(scheduler: var Scheduler, scheduled: sink ScheduledRequest,
     ),
     sequence: scheduler.nextSequence,
     readyAt: now + meta.retryPolicy.retryDelayMs(nextAttempt)
-  )
+  ))
   inc scheduler.nextSequence
   bucket.sortQueue()
   scheduler.buckets[bucketName] = move bucket

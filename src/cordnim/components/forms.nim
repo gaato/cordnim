@@ -15,66 +15,66 @@ const
 
 type
   ModalFieldKind* {.pure.} = enum ## Components accepted in a modal label.
-    TextInput          ## Free-form single-line or paragraph text.
-    StringSelect       ## Select from application-defined string options.
-    UserSelect         ## Select one or more Discord users.
-    RoleSelect         ## Select one or more Discord roles.
-    MentionableSelect  ## Select one or more users or roles.
-    ChannelSelect      ## Select one or more channels.
-    FileUpload         ## Upload one or more files.
-    RadioGroup         ## Select at most one application-defined option.
-    CheckboxGroup      ## Select zero or more application-defined options.
-    Checkbox           ## A single boolean checkbox.
+    TextInput ## Free-form single-line or paragraph text.
+    StringSelect ## Select from application-defined string options.
+    UserSelect ## Select one or more Discord users.
+    RoleSelect ## Select one or more Discord roles.
+    MentionableSelect ## Select one or more users or roles.
+    ChannelSelect ## Select one or more channels.
+    FileUpload ## Upload one or more files.
+    RadioGroup ## Select at most one application-defined option.
+    CheckboxGroup ## Select zero or more application-defined options.
+    Checkbox ## A single boolean checkbox.
 
   ModalTextStyle* {.pure.} = enum ## Discord text-input presentation styles.
-    Short = 1      ## A single-line text input.
-    Paragraph = 2  ## A multi-line text input.
+    Short = 1 ## A single-line text input.
+    Paragraph = 2 ## A multi-line text input.
 
   ModalChannelType* {.pure.} = enum ## Channel types accepted by a modal select.
-    GuildText = 0          ## A text channel in a guild.
-    Dm = 1                 ## A direct-message channel.
-    GuildVoice = 2         ## A voice channel in a guild.
-    GroupDm = 3            ## A group direct-message channel.
-    GuildCategory = 4      ## A guild category.
-    GuildAnnouncement = 5  ## A guild announcement channel.
+    GuildText = 0 ## A text channel in a guild.
+    Dm = 1 ## A direct-message channel.
+    GuildVoice = 2 ## A voice channel in a guild.
+    GroupDm = 3 ## A group direct-message channel.
+    GuildCategory = 4 ## A guild category.
+    GuildAnnouncement = 5 ## A guild announcement channel.
     AnnouncementThread = 10 ## A thread in an announcement channel.
-    PublicThread = 11      ## A public thread.
-    PrivateThread = 12     ## A private thread.
-    GuildStageVoice = 13   ## A guild stage channel.
-    GuildDirectory = 14    ## A guild directory channel.
-    GuildForum = 15        ## A guild forum channel.
-    GuildMedia = 16        ## A guild media channel.
+    PublicThread = 11 ## A public thread.
+    PrivateThread = 12 ## A private thread.
+    GuildStageVoice = 13 ## A guild stage channel.
+    GuildDirectory = 14 ## A guild directory channel.
+    GuildForum = 15 ## A guild forum channel.
+    GuildMedia = 16 ## A guild media channel.
 
   ModalChoiceSpec* = object ## One application-defined input option.
-    label*: string       ## User-facing option text.
-    value*: string       ## Stable value returned by Discord.
+    label*: string ## User-facing option text.
+    value*: string ## Stable value returned by Discord.
     description*: string ## Optional explanatory text.
-    selected*: bool      ## Whether Discord initially selects the option.
+    selected*: bool ## Whether Discord initially selects the option.
 
   ModalFieldSpec* = object ## Complete wire metadata for one typed modal field.
-    name*: string                 ## Nim source field name.
-    customId*: string             ## Stable Discord component custom ID.
-    label*: string                ## User-facing label wrapper text.
-    description*: string          ## Optional label description.
-    kind*: ModalFieldKind         ## Interactive component kind.
-    required*: bool               ## Whether the field must have a value.
-    minValues*: int               ## Minimum selection or upload count.
-    maxValues*: int               ## Maximum selection or upload count.
-    minLength*: int               ## Minimum text-input character count.
-    maxLength*: int               ## Maximum text-input character count.
-    placeholder*: string          ## Optional input placeholder.
-    textStyle*: ModalTextStyle    ## Text style; ignored by other kinds.
+    name*: string ## Nim source field name.
+    customId*: string ## Stable Discord component custom ID.
+    label*: string ## User-facing label wrapper text.
+    description*: string ## Optional label description.
+    kind*: ModalFieldKind ## Interactive component kind.
+    required*: bool ## Whether the field must have a value.
+    minValues*: int ## Minimum selection or upload count.
+    maxValues*: int ## Maximum selection or upload count.
+    minLength*: int ## Minimum text-input character count.
+    maxLength*: int ## Maximum text-input character count.
+    placeholder*: string ## Optional input placeholder.
+    textStyle*: ModalTextStyle ## Text style; ignored by other kinds.
     options*: seq[ModalChoiceSpec] ## Application-defined choices.
     channelTypes*: set[ModalChannelType] ## Allowed channel kinds.
 
   ModalSpec* = object ## A modal schema independent of interaction transport.
-    customId*: string         ## Stable routed identifier for the modal.
-    title*: string            ## User-facing modal title.
+    customId*: string ## Stable routed identifier for the modal.
+    title*: string ## User-facing modal title.
     fields*: seq[ModalFieldSpec] ## Ordered typed input fields.
 
   MentionableKind* {.pure.} = enum ## A mentionable-select entity category.
-    User  ## A selected Discord user.
-    Role  ## A selected Discord role.
+    User ## A selected Discord user.
+    Role ## A selected Discord role.
 
   MentionableId* = object ## A typed user-or-role mentionable selection.
     case kind*: MentionableKind ## Selected entity category.
@@ -84,21 +84,21 @@ type
       roleId*: RoleId ## Selected role ID.
 
   ModalAttachment* = object ## A resolved attachment uploaded through a modal.
-    id*: AttachmentId          ## Attachment snowflake.
-    filename*: string          ## Original filename.
-    size*: int64               ## Size in bytes.
-    url*: string               ## Discord CDN URL.
-    proxyUrl*: string          ## Discord media proxy URL.
+    id*: AttachmentId ## Attachment snowflake.
+    filename*: string ## Original filename.
+    size*: int64 ## Size in bytes.
+    url*: string ## Discord CDN URL.
+    proxyUrl*: string ## Discord media proxy URL.
     description*: Option[string] ## Optional attachment description.
     contentType*: Option[string] ## Optional MIME type.
-    raw*: JsonNode             ## Lossless resolved attachment object.
+    raw*: JsonNode ## Lossless resolved attachment object.
 
   ModalResolvedKind* {.pure.} = enum ## A modal resolved-entity map category.
     Attachment ## An entry from `resolved.attachments`.
-    User       ## An entry from `resolved.users`.
-    Member     ## An entry from `resolved.members`.
-    Role       ## An entry from `resolved.roles`.
-    Channel    ## An entry from `resolved.channels`.
+    User ## An entry from `resolved.users`.
+    Member ## An entry from `resolved.members`.
+    Role ## An entry from `resolved.roles`.
+    Channel ## An entry from `resolved.channels`.
 
   ModalResolvedObserver* = proc(
     kind: ModalResolvedKind;
@@ -109,36 +109,39 @@ type
   ModalAttachmentDecoder* = proc(
     id: string;
     raw: JsonNode
-  ): ModalAttachment {.gcsafe, raises: [ValueError].} ## Converts an attachment.
+  ): ModalAttachment {.gcsafe, raises: [ValueError].} ## Converts one selected
+    ## `resolved.attachments` entry; `ValueError` becomes an `AttachmentDecode`
+    ## problem.
 
   ModalDecodeHooks* = object ## Extension points for resolved submit data.
-    attachmentDecoder*: ModalAttachmentDecoder ## Custom attachment conversion.
+    attachmentDecoder*: ModalAttachmentDecoder ## Optional converter; nil uses
+                                               ## `parseModalAttachment`.
     observeResolved*: ModalResolvedObserver ## Observes consumed resolved data.
 
   ModalDecodeProblemKind* {.pure.} = enum ## Stable modal decode failures.
-    InvalidPayload       ## Submit data does not have the expected JSON shape.
-    WrongModal           ## Submitted modal custom ID does not match the type.
-    DuplicateField       ## More than one component uses the same custom ID.
-    MissingField         ## A required field response is absent.
-    WrongComponentKind   ## A response has a different Discord component type.
-    WrongValueKind       ## A response value has an unexpected JSON kind.
-    TooFewValues         ## A field contains too few submitted values.
-    TooManyValues        ## A field contains too many submitted values.
-    TextTooShort         ## A text response is shorter than its minimum.
-    TextTooLong          ## A text response is longer than its maximum.
-    InvalidChoice        ## A submitted option is not declared by the schema.
-    InvalidSnowflake     ## A selected entity ID is not a Discord snowflake.
-    UnresolvedEntity     ## A submitted ID is missing from resolved data.
-    AttachmentDecode     ## An attachment hook rejected resolved data.
+    InvalidPayload ## Submit data does not have the expected JSON shape.
+    WrongModal ## Submitted modal custom ID does not match the type.
+    DuplicateField ## More than one component uses the same custom ID.
+    MissingField ## A required field response is absent.
+    WrongComponentKind ## A response has a different Discord component type.
+    WrongValueKind ## A response value has an unexpected JSON kind.
+    TooFewValues ## A field contains too few submitted values.
+    TooManyValues ## A field contains too many submitted values.
+    TextTooShort ## A text response is shorter than its minimum.
+    TextTooLong ## A text response is longer than its maximum.
+    InvalidChoice ## A submitted option is not declared by the schema.
+    InvalidSnowflake ## A selected entity ID is not a Discord snowflake.
+    UnresolvedEntity ## A submitted ID is missing from resolved data.
+    AttachmentDecode ## An attachment hook rejected resolved data.
 
   ModalDecodeProblem* = object ## One field or payload decoding problem.
     kind*: ModalDecodeProblemKind ## Machine-readable failure category.
-    field*: string                ## Nim field, or empty for payload errors.
-    customId*: string             ## Discord custom ID, when known.
-    message*: string              ## Human-readable diagnostic.
+    field*: string ## Nim field, or empty for payload errors.
+    customId*: string ## Discord custom ID, when known.
+    message*: string ## Human-readable diagnostic.
 
   ModalDecodeResult*[T] = object ## A typed value and all decoding problems.
-    value*: T                       ## Partially decoded value on failure.
+    value*: T ## Partially decoded value on failure.
     problems*: seq[ModalDecodeProblem] ## Empty when decoding succeeded.
 
   ModalSubmission = object
@@ -152,6 +155,11 @@ template discordModal*(
     customId: static[string] = ""
   ) {.pragma.}
   ## Attaches modal-level metadata consumed by `deriveDiscordModal`.
+  ##
+  ## An empty modal `customId` derives from the Nim type name. Empty field
+  ## `customId` values derive from their Nim field names. Derivation converts
+  ## both names to snake case, so set explicit IDs before deploying a form that
+  ## must survive later source renames.
 
 template textInput*(
     label: static[string];
@@ -174,7 +182,11 @@ template stringSelect*(
     maxValues: static[int] = 1;
     customId: static[string] = ""
   ) {.pragma.}
-  ## Declares an enum, `seq[enum]`, or `set[enum]` select field.
+  ## Declares an enum-valued string select.
+  ##
+  ## A scalar uses `enum` or `Option[enum]`; a multi-select uses `seq[enum]` or
+  ## `set[enum]`. Optional collections are not accepted and an unselected
+  ## collection decodes as an empty value.
 
 template userSelect*(
     label: static[string];
@@ -185,7 +197,10 @@ template userSelect*(
     maxValues: static[int] = 1;
     customId: static[string] = ""
   ) {.pragma.}
-  ## Declares a `UserId` selection field.
+  ## Declares a `UserId`, `Option[UserId]`, or `seq[UserId]` selection field.
+  ##
+  ## A non-required scalar must use `Option[UserId]`; an unselected sequence
+  ## decodes as empty.
 
 template roleSelect*(
     label: static[string];
@@ -196,7 +211,10 @@ template roleSelect*(
     maxValues: static[int] = 1;
     customId: static[string] = ""
   ) {.pragma.}
-  ## Declares a `RoleId` selection field.
+  ## Declares a `RoleId`, `Option[RoleId]`, or `seq[RoleId]` selection field.
+  ##
+  ## A non-required scalar must use `Option[RoleId]`; an unselected sequence
+  ## decodes as empty.
 
 template mentionableSelect*(
     label: static[string];
@@ -207,7 +225,11 @@ template mentionableSelect*(
     maxValues: static[int] = 1;
     customId: static[string] = ""
   ) {.pragma.}
-  ## Declares a `MentionableId` selection field.
+  ## Declares a `MentionableId`, `Option[MentionableId]`, or
+  ## `seq[MentionableId]` selection field.
+  ##
+  ## A non-required scalar must use `Option[MentionableId]`; an unselected
+  ## sequence decodes as empty.
 
 template channelSelect*(
     label: static[string];
@@ -219,7 +241,11 @@ template channelSelect*(
     customId: static[string] = "";
     channelTypes: static[set[ModalChannelType]] = {}
   ) {.pragma.}
-  ## Declares a `ChannelId` selection field and optional channel filter.
+  ## Declares a `ChannelId`, `Option[ChannelId]`, or `seq[ChannelId]` selection
+  ## field with an optional channel-type filter.
+  ##
+  ## A non-required scalar must use `Option[ChannelId]`; an unselected sequence
+  ## decodes as empty.
 
 template fileUpload*(
     label: static[string];
@@ -247,7 +273,10 @@ template checkboxGroup*(
     maxValues: static[int] = 10;
     customId: static[string] = ""
   ) {.pragma.}
-  ## Declares a `set[enum]` or sequence checkbox-group field.
+  ## Declares a `seq[enum]` or `set[enum]` checkbox-group field.
+  ##
+  ## The unselected state is an empty collection; `Option` collections are not
+  ## accepted.
 
 template checkbox*(
     label: static[string];
@@ -300,12 +329,12 @@ proc parseModalAttachment*(id: string; raw: JsonNode): ModalAttachment =
 func addProblem(problems: var seq[ModalDecodeProblem];
                 kind: ModalDecodeProblemKind; field, customId,
                 message: string) =
-  problems.add ModalDecodeProblem(
+  problems.add(ModalDecodeProblem(
     kind: kind,
     field: field,
     customId: customId,
     message: message
-  )
+  ))
 
 func containsChoice(field: ModalFieldSpec; value: string): bool =
   for choice in field.options:
@@ -313,7 +342,7 @@ func containsChoice(field: ModalFieldSpec; value: string): bool =
       return true
 
 func validate*(modal: ModalSpec): seq[string] =
-  ## Returns every static Discord schema problem in `modal`.
+  ## Returns every Discord schema problem in `modal` without I/O or exceptions.
   if modal.customId.runeLen notin 1..MaxModalCustomIdLength:
     result.add "modal custom_id must contain between 1 and " &
       $MaxModalCustomIdLength & " characters"
@@ -398,7 +427,10 @@ func componentType(kind: ModalFieldKind): int =
   of ModalFieldKind.Checkbox: 23
 
 func toJson*(modal: ModalSpec): JsonNode =
-  ## Serializes a validated schema as Discord modal callback data.
+  ## Serializes a schema as Discord modal callback data.
+  ##
+  ## This function does not validate. Call `validate` first and serialize only
+  ## when it returns an empty sequence.
   result = newJObject()
   result["custom_id"] = %modal.customId
   result["title"] = %modal.title
@@ -444,7 +476,7 @@ func toJson*(modal: ModalSpec): JsonNode =
           field.channelTypes.card > 0:
         input["channel_types"] = newJArray()
         for channelType in field.channelTypes:
-          input["channel_types"].add %ord(channelType)
+          input["channel_types"].add(%ord(channelType))
     of ModalFieldKind.FileUpload:
       input["required"] = %field.required
       input["min_values"] = %field.minValues
@@ -601,7 +633,7 @@ func decodeValues(response: JsonNode; field: ModalFieldSpec;
         "submitted values must be strings"
       )
     else:
-      result.add node.getStr()
+      result.add(node.getStr())
   field.validateCount(result.len, problems)
 
 func decodeChoiceValues(response: JsonNode; field: ModalFieldSpec;
@@ -699,9 +731,9 @@ proc decodeAttachments(submission: ModalSubmission; response: JsonNode;
       hooks.observe(ModalResolvedKind.Attachment, id, raw)
       try:
         if hooks.attachmentDecoder.isNil:
-          result.add parseModalAttachment(id, raw)
+          result.add(parseModalAttachment(id, raw))
         else:
-          result.add hooks.attachmentDecoder(id, raw)
+          result.add(hooks.attachmentDecoder(id, raw))
       except ValueError as error:
         problems.addProblem(
           ModalDecodeProblemKind.AttachmentDecode, field.name, field.customId,
@@ -790,7 +822,7 @@ proc choiceSpecs(typeNode: NimNode; field: NimNode): seq[ModalChoiceSpec]
   if names.len == 0:
     error("field choices require an enum, seq[enum], or set[enum] type", field)
   for name in names:
-    result.add ModalChoiceSpec(label: name, value: name)
+    result.add(ModalChoiceSpec(label: name, value: name))
 
 proc modalKind(name: string; field: NimNode): ModalFieldKind
     {.compileTime.} =
@@ -964,8 +996,8 @@ proc parseField(definition, declaredName, typeNode: NimNode): DerivedField
       result.spec.options = choiceSpecs(typeNode, declaredName)
     elif result.spec.kind == ModalFieldKind.ChannelSelect:
       for item in metadata[8]:
-        result.spec.channelTypes.incl modalChannelType(item.intVal.int,
-          declaredName)
+        result.spec.channelTypes.incl(modalChannelType(item.intVal.int,
+          declaredName))
   of ModalFieldKind.FileUpload:
     result.spec.label = metadata[1].strVal
     result.spec.description = metadata[2].strVal
@@ -1031,7 +1063,7 @@ proc deriveModal(typeNode: NimNode): DerivedModal {.compileTime.} =
       error("modal object supports only ordinary named fields", definition)
     let fieldType = definition[^2]
     for index in 0..<definition.len - 2:
-      result.fields.add parseField(definition, definition[index], fieldType)
+      result.fields.add(parseField(definition, definition[index], fieldType))
 
   let schema = ModalSpec(
     customId: result.customId,
@@ -1058,11 +1090,11 @@ proc choiceExpr(choice: ModalChoiceSpec): NimNode {.compileTime.} =
 proc fieldSpecExpr(field: ModalFieldSpec): NimNode {.compileTime.} =
   var choices = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
   for choice in field.options:
-    choices[1].add choiceExpr(choice)
+    choices[1].add(choiceExpr(choice))
   var channels = newTree(nnkCurly)
   for channelType in field.channelTypes:
-    channels.add newDotExpr(bindSym"ModalChannelType",
-      ident($channelType))
+    channels.add(newDotExpr(bindSym"ModalChannelType",
+      ident($channelType)))
   let specType = bindSym"ModalFieldSpec"
   result = newTree(nnkObjConstr, specType,
     newTree(nnkExprColonExpr, ident"name", newLit(field.name)),
@@ -1087,7 +1119,7 @@ proc fieldSpecExpr(field: ModalFieldSpec): NimNode {.compileTime.} =
 proc specExpr(modal: DerivedModal): NimNode {.compileTime.} =
   var fields = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
   for field in modal.fields:
-    fields[1].add fieldSpecExpr(field.spec)
+    fields[1].add(fieldSpecExpr(field.spec))
   newTree(nnkObjConstr, bindSym"ModalSpec",
     newTree(nnkExprColonExpr, ident"customId", newLit(modal.customId)),
     newTree(nnkExprColonExpr, ident"title", newLit(modal.title)),
@@ -1425,11 +1457,13 @@ proc decodeMentionable(submission: ModalSubmission; id: string;
   MentionableId(kind: MentionableKind.User)
 
 macro deriveDiscordModal*(modalType: typedesc): untyped =
-  ## Generates schema lookup, custom-ID lookup, and a typed submit decoder.
+  ## Generates `modalSpec`, `modalCustomId`, and `decodeDiscordModal` overloads.
   ##
   ## Invoke this once, at module scope, after declaring an object annotated with
-  ## `discordModal`. The generated overloads are exported with the declared
-  ## type and perform no I/O.
+  ## `discordModal`. The generated overloads are exported for the declared type
+  ## and perform no I/O. `decodeDiscordModal` returns a partially decoded value
+  ## and aggregates malformed submit data in `ModalDecodeResult.problems`
+  ## instead of raising it.
   let modal = deriveModal(modalType)
   let typeNode = modal.typeNode
   let schema = modal.specExpr()
@@ -1466,21 +1500,24 @@ macro deriveDiscordModal*(modalType: typedesc): untyped =
     decodeBody.add quote do:
       let `fieldLocal` = `fieldSpec`
       `target` = `value`
-  decodeBody.add newTree(nnkReturnStmt, decoded)
+  decodeBody.add(newTree(nnkReturnStmt, decoded))
 
   # The explicit macro emits ordinary overloads instead of mutating the type
   # declaration, which avoids relying on experimental type pragma transforms.
   result = quote do:
-    func `modalSpecProc`*(T: typedesc[`typeNode`]): ModalSpec =
+    func `modalSpecProc`*(t: typedesc[`typeNode`]): ModalSpec =
       ## Returns the compile-time-derived Discord modal schema.
       `schema`
 
-    func `modalCustomIdProc`*(T: typedesc[`typeNode`]): string =
+    func `modalCustomIdProc`*(t: typedesc[`typeNode`]): string =
       ## Returns the modal custom ID generated for this form type.
       `customId`
 
-    proc `decodeProc`*(T: typedesc[`typeNode`]; `payload`: JsonNode;
+    proc `decodeProc`*(t: typedesc[`typeNode`]; `payload`: JsonNode;
                        `hooks`: ModalDecodeHooks = initModalDecodeHooks()):
                        ModalDecodeResult[`typeNode`] =
-      ## Decodes Discord modal submit data into the declared object type.
+      ## Decodes submit data, collecting malformed fields instead of raising.
+      ##
+      ## On failure, `value` may be partially populated and `problems` contains
+      ## every detected payload, field, resolved-entity, and attachment problem.
       `decodeBody`

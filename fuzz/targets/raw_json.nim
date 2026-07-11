@@ -26,7 +26,7 @@ when defined(fuzzStandalone):
   import std/[cmdline, syncio]
 
   stderr.write "StandaloneFuzzTarget: running " & $paramCount() & " inputs\n"
-  for index in 1 .. paramCount():
+  for index in 1..paramCount():
     var buffer = readFile(paramStr(index))
     discard testOneInput(
       cast[ptr UncheckedArray[byte]](cstring(buffer)), buffer.len

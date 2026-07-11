@@ -1,9 +1,14 @@
 ## Structured ownership for Chronos child tasks.
+##
+## A scope has one serialized Chronos event-loop owner. It does not synchronize
+## cross-thread access to its child list or lifecycle state.
 
 import chronos
 
 type
   TaskScope* = ref object ## Group of child tasks cancelled and joined together.
+    # One Chronos event-loop owner serializes access; these fields are not
+    # synchronization primitives for cross-thread mutation.
     children: seq[Future[void]]
     closed: bool
 
@@ -22,8 +27,11 @@ proc reap*(scope: TaskScope) =
 proc spawn*(scope: TaskScope, child: Future[void]): Future[void] =
   ## Registers an already-created Chronos task as a child.
   ##
-  ## Raises `ValueError` when shutdown has closed the scope.
+  ## When shutdown has closed the scope, this requests cancellation of `child`
+  ## before raising `ValueError`, so the rejected task cannot become orphaned.
   if scope.closed:
+    # The child already exists. Cancel before rejecting it so ownership is not
+    # lost and the task cannot continue as an orphan.
     child.cancelSoon()
     raise newException(ValueError, "cannot spawn into a closed task scope")
   scope.reap()
@@ -43,6 +51,8 @@ proc cancelAndJoin*(scope: TaskScope): Future[void] {.
   ## Closes the scope, requests cancellation, and waits for every child.
   if scope.closed and scope.children.len == 0:
     return
+  # Close before the first await so reentrant spawns during cancellation are
+  # rejected and cancelled instead of escaping the shutdown join.
   scope.closed = true
   if scope.children.len > 0:
     await cancelAndWait(scope.children)

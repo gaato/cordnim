@@ -2,7 +2,7 @@
 
 type
   FakeClock* = object ## Manually advanced monotonic millisecond clock.
-    nowMs*: int64     ## Current test time in milliseconds.
+    nowMs*: int64 ## Current test time in milliseconds.
 
 func initFakeClock*(nowMs = 0'i64): FakeClock =
   ## Creates a fake clock at `nowMs`.

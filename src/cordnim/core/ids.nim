@@ -3,7 +3,8 @@
 import std/hashes
 
 type
-  Id*[Kind] = distinct uint64 ## A Discord snowflake whose resource kind is checked at compile time.
+  Id*[Kind] = distinct uint64 ## A typed Discord snowflake; wire conversion and
+                              ## cross-kind mixing are always explicit.
 
   ApplicationKind* = object ## Type marker for Discord applications.
   AttachmentKind* = object ## Type marker for message attachments.
@@ -26,26 +27,26 @@ type
   UserKind* = object ## Type marker for Discord users.
   WebhookKind* = object ## Type marker for webhooks.
 
-  ApplicationId* = Id[ApplicationKind] ## Snowflake identifying an application.
-  AttachmentId* = Id[AttachmentKind] ## Snowflake identifying an attachment.
-  AuditLogEntryId* = Id[AuditLogEntryKind] ## Snowflake identifying an audit-log entry.
-  ChannelId* = Id[ChannelKind] ## Snowflake identifying a channel or thread.
-  CommandId* = Id[ApplicationCommandKind] ## Snowflake identifying an application command.
-  EmojiId* = Id[EmojiKind] ## Snowflake identifying a custom emoji.
-  EntitlementId* = Id[EntitlementKind] ## Snowflake identifying an entitlement.
-  GuildId* = Id[GuildKind] ## Snowflake identifying a guild.
-  IntegrationId* = Id[IntegrationKind] ## Snowflake identifying an integration.
-  InteractionId* = Id[InteractionKind] ## Snowflake identifying an interaction.
-  MessageId* = Id[MessageKind] ## Snowflake identifying a message.
-  RoleId* = Id[RoleKind] ## Snowflake identifying a role.
-  ScheduledEventId* = Id[ScheduledEventKind] ## Snowflake identifying a scheduled event.
-  SkuId* = Id[SkuKind] ## Snowflake identifying an application SKU.
-  SoundboardSoundId* = Id[SoundboardSoundKind] ## Snowflake identifying a soundboard sound.
-  StageInstanceId* = Id[StageInstanceKind] ## Snowflake identifying a stage instance.
-  StickerId* = Id[StickerKind] ## Snowflake identifying a sticker.
-  SubscriptionId* = Id[SubscriptionKind] ## Snowflake identifying a SKU subscription.
-  UserId* = Id[UserKind] ## Snowflake identifying a Discord user.
-  WebhookId* = Id[WebhookKind] ## Snowflake identifying a webhook.
+  ApplicationId* = Id[ApplicationKind] ## Kind-safe application ID.
+  AttachmentId* = Id[AttachmentKind] ## Kind-safe attachment ID.
+  AuditLogEntryId* = Id[AuditLogEntryKind] ## Kind-safe audit-log entry ID.
+  ChannelId* = Id[ChannelKind] ## Kind-safe channel or thread ID.
+  CommandId* = Id[ApplicationCommandKind] ## Kind-safe application-command ID.
+  EmojiId* = Id[EmojiKind] ## Kind-safe custom-emoji ID.
+  EntitlementId* = Id[EntitlementKind] ## Kind-safe entitlement ID.
+  GuildId* = Id[GuildKind] ## Kind-safe guild ID.
+  IntegrationId* = Id[IntegrationKind] ## Kind-safe integration ID.
+  InteractionId* = Id[InteractionKind] ## Kind-safe interaction ID.
+  MessageId* = Id[MessageKind] ## Kind-safe message ID.
+  RoleId* = Id[RoleKind] ## Kind-safe role ID.
+  ScheduledEventId* = Id[ScheduledEventKind] ## Kind-safe scheduled-event ID.
+  SkuId* = Id[SkuKind] ## Kind-safe application-SKU ID.
+  SoundboardSoundId* = Id[SoundboardSoundKind] ## Kind-safe soundboard-sound ID.
+  StageInstanceId* = Id[StageInstanceKind] ## Kind-safe stage-instance ID.
+  StickerId* = Id[StickerKind] ## Kind-safe sticker ID.
+  SubscriptionId* = Id[SubscriptionKind] ## Kind-safe subscription ID.
+  UserId* = Id[UserKind] ## Kind-safe user ID.
+  WebhookId* = Id[WebhookKind] ## Kind-safe webhook ID.
 
 func toId*[Kind](value: uint64): Id[Kind] {.inline.} =
   ## Explicitly wraps an integer at a protocol boundary.

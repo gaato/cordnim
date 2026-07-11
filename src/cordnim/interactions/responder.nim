@@ -6,45 +6,45 @@ import cordnim/rest/request
 
 type
   InteractionResponseState* = enum ## Atomic initial-response lifecycle.
-    irFresh,            ## No initial response has been claimed.
-    irInitialPending,   ## One task owns an uncommitted initial response.
-    irDeferred,         ## Discord accepted an initial deferred response.
-    irResponded,        ## Discord accepted a non-deferred initial response.
-    irExpired,          ## The initial response deadline elapsed while fresh.
-    irTransportUnknown  ## Sending failed after delivery became ambiguous.
+    irFresh, ## No initial response has been claimed.
+    irInitialPending, ## One task owns an uncommitted initial response.
+    irDeferred, ## Discord accepted an initial deferred response.
+    irResponded, ## Discord accepted a non-deferred initial response.
+    irExpired, ## The initial response deadline elapsed while fresh.
+    irTransportUnknown ## Sending failed after delivery became ambiguous.
 
   InteractionResponseError* = enum ## Non-exception response-state outcome.
-    ireNone,                   ## Operation completed successfully.
-    ireAlreadyAcknowledged,    ## No fresh initial-response right remains.
+    ireNone, ## Operation completed successfully.
+    ireAlreadyAcknowledged, ## No fresh initial-response right remains.
     ireInitialDeadlineExpired, ## The acknowledgement deadline has elapsed.
-    ireTokenExpired,           ## The follow-up token lifetime has elapsed.
-    ireClaimNotPending,        ## The supplied claim no longer owns the state.
-    irePolicyUnsupported       ## Interaction type cannot use this ACK policy.
+    ireTokenExpired, ## The follow-up token lifetime has elapsed.
+    ireClaimNotPending, ## The supplied claim no longer owns the state.
+    irePolicyUnsupported ## Interaction type cannot use this ACK policy.
 
   InteractionType* = enum ## Interaction classes relevant to response rules.
     ikApplicationCommand, ## Slash, user, or message application command.
-    ikMessageComponent,   ## Button, select, or other component activation.
-    ikAutocomplete,       ## Focused command-option autocomplete request.
-    ikModalSubmit,        ## Submitted modal form.
-    ikPing                ## Discord endpoint-verification ping.
+    ikMessageComponent, ## Button, select, or other component activation.
+    ikAutocomplete, ## Focused command-option autocomplete request.
+    ikModalSubmit, ## Submitted modal form.
+    ikPing ## Discord endpoint-verification ping.
 
   InitialResponseKind* = enum ## Semantic kind of an initial response.
-    irkMessage,         ## Send a channel message response.
+    irkMessage, ## Send a channel message response.
     irkDeferredMessage, ## Acknowledge and edit or follow up later.
-    irkUpdateMessage,   ## Immediately update a component's message.
-    irkDeferredUpdate,  ## Acknowledge a component update for later editing.
-    irkAutocomplete,    ## Return autocomplete choices.
-    irkModal,           ## Present a modal form.
-    irkPong             ## Answer a Discord ping.
+    irkUpdateMessage, ## Immediately update a component's message.
+    irkDeferredUpdate, ## Acknowledge a component update for later editing.
+    irkAutocomplete, ## Return autocomplete choices.
+    irkModal, ## Present a modal form.
+    irkPong ## Answer a Discord ping.
 
   Visibility* = enum ## Requested visibility of a message response.
-    vPublic,    ## Visible wherever Discord permits a public response.
-    vEphemeral  ## Visible only to the invoking user.
+    vPublic, ## Visible wherever Discord permits a public response.
+    vEphemeral ## Visible only to the invoking user.
 
   AckPolicyKind* = enum ## Handler acknowledgement strategy.
-    apkManual,          ## Handler must issue the initial response itself.
-    apkAutoDefer,       ## Send a deferred message after a threshold.
-    apkAutoDeferUpdate  ## Send a deferred message update after a threshold.
+    apkManual, ## Handler must issue the initial response itself.
+    apkAutoDefer, ## Send a deferred message after a threshold.
+    apkAutoDeferUpdate ## Send a deferred message update after a threshold.
 
   AckPolicy* = object ## Deadline-aware initial acknowledgement policy.
     kind*: AckPolicyKind ## Strategy selected by the command or handler.
@@ -56,17 +56,17 @@ type
     ackDeadline*: MonoMillis ## Last instant for the initial response.
     tokenExpiresAt*: MonoMillis ## Last instant for token-backed operations.
 
-  InteractionResponder* = ref object
-    ## Shared atomic authority for exactly one initial interaction response.
+  InteractionResponder* = ref object ## Shared atomic authority for exactly one
+    ## initial interaction response.
     atomicState: Atomic[uint8]
     deadlines*: InteractionDeadlines ## Immutable lifecycle deadlines.
 
-  InitialResponseClaim* = ref object
-    ## Exclusive capability to commit one in-progress initial response.
+  InitialResponseClaim* = ref object ## Exclusive capability to commit one
+    ## in-progress initial response.
     owner: InteractionResponder
 
   ClaimResult* = object ## Result of claiming the initial response.
-    case ok*: bool
+    case ok*: bool ## Whether the claim succeeded; selects `claim` or `error`.
     of true:
       claim*: InitialResponseClaim ## Exclusive claim when `ok` is true.
     of false:
@@ -95,7 +95,8 @@ func allowedInitialKinds*(kind: InteractionType): set[InitialResponseKind] =
   of ikApplicationCommand:
     {irkMessage, irkDeferredMessage, irkModal}
   of ikMessageComponent:
-    {irkMessage, irkDeferredMessage, irkUpdateMessage, irkDeferredUpdate, irkModal}
+    {irkMessage, irkDeferredMessage, irkUpdateMessage, irkDeferredUpdate,
+      irkModal}
   of ikAutocomplete:
     {irkAutocomplete}
   of ikModalSubmit:
@@ -149,6 +150,8 @@ func remainingTokenMs*(responder: InteractionResponder,
 
 proc expireFresh(responder: InteractionResponder) =
   var expected = uint8(ord(irFresh))
+  # A lost CAS means another task already claimed or completed the response.
+  # Expiry must never overwrite that newer authority.
   discard responder.atomicState.compareExchange(
     expected, uint8(ord(irExpired)), moAcquireRelease, moAcquire)
 
@@ -171,6 +174,8 @@ proc finish(claim: InitialResponseClaim,
             desired: InteractionResponseState): StateResult =
   if claim.isNil or claim.owner.isNil:
     return StateResult(ok: false, error: ireClaimNotPending)
+  # Only a claim that still observes `pending` may publish a terminal state;
+  # stale aliases and duplicate commits must leave that state untouched.
   var expected = uint8(ord(irInitialPending))
   if claim.owner.atomicState.compareExchange(
       expected, uint8(ord(desired)), moAcquireRelease, moAcquire):

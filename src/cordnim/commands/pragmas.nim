@@ -13,4 +13,10 @@ template discordCommand*(
     autoDeferAfterMs: static[int] = 2_000;
     ephemeral: static[bool] = true;
     requiredBotPermissions: static[set[Permission]] = {}
-  ) {.pragma.} ## Marks a typed procedure as an application command declaration.
+  ) {.pragma.} ## Declares an application command consumed by `commandSet`.
+               ##
+               ## Name, description, kind, installation contexts, invocation
+               ## contexts, and required permissions enter the generated
+               ## command and application manifests. ACK kind, delay, and
+               ## ephemeral visibility configure the runtime's initial-response
+               ## policy.

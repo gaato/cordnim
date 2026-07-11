@@ -11,21 +11,21 @@ type
   UploadStream* = object ## Move-only owner of a readable upload file.
     handle: File
     path: string
-    size*: int64        ## File size observed when the stream was opened.
-    consumed*: int64    ## Bytes returned by `readChunk`.
+    size*: int64 ## File size observed when the stream was opened.
+    consumed*: int64 ## Bytes returned by `readChunk`.
 
   AttachmentEditKind* = enum ## Operation applied to one attachment.
-    aekKeep,                    ## Retain an existing attachment unchanged.
-    aekUpdate,                  ## Retain and update existing metadata.
-    aekUpload                   ## Add one streamed attachment.
+    aekKeep, ## Retain an existing attachment unchanged.
+    aekUpdate, ## Retain and update existing metadata.
+    aekUpload ## Add one streamed attachment.
 
   AttachmentEdit* = object ## One existing or new attachment operation.
     kind*: AttachmentEditKind ## Operation kind.
     existingId*: AttachmentId ## Existing attachment snowflake for keep/update.
-    filename*: string         ## Upload filename for new attachments.
+    filename*: string ## Upload filename for new attachments.
     description*: Option[string] ## Accessible attachment description.
-    spoiler*: Option[bool]    ## Optional spoiler metadata update.
-    upload*: UploadStream     ## Stream present only for `aekUpload`.
+    spoiler*: Option[bool] ## Optional spoiler metadata update.
+    upload*: UploadStream ## Stream present only for `aekUpload`.
 
   AttachmentPlan* = object ## Ordered attachment operations for a message edit.
     edits*: seq[AttachmentEdit] ## Existing items first, then new uploads.
@@ -117,7 +117,7 @@ proc validate*(plan: var AttachmentPlan): seq[string] =
   var existingIds = initHashSet[AttachmentId]()
   var filenames = initHashSet[string]()
   var sawUpload = false
-  for index in 0 ..< plan.edits.len:
+  for index in 0..<plan.edits.len:
     let edit {.cursor.} = plan.edits[index]
     case edit.kind
     of aekKeep, aekUpdate:
@@ -144,9 +144,9 @@ proc attachmentsJson*(plan: var AttachmentPlan): JsonNode =
   ## Produces Discord's attachment metadata array without reading file bodies.
   result = newJArray()
   var uploadIndex = 0
-  for index in 0 ..< plan.edits.len:
+  for index in 0..<plan.edits.len:
     let edit {.cursor.} = plan.edits[index]
-    var item = newJObject()
+    let item = newJObject()
     case edit.kind
     of aekKeep, aekUpdate:
       item["id"] = %($edit.existingId)

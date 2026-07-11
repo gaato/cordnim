@@ -7,16 +7,18 @@ import ./spec
 
 type
   ManifestChangeKind* = enum ## Difference between two command manifests.
-    mckAdded,               ## A command exists only in the desired manifest.
-    mckRemoved,             ## A command exists only in the current manifest.
-    mckChanged              ## A command exists in both but its schema changed.
+    mckAdded, ## A command exists only in the desired manifest.
+    mckRemoved, ## A command exists only in the current manifest.
+    mckChanged ## A command exists in both but its schema changed.
 
   ManifestChange* = object ## One name-addressed command manifest change.
     kind*: ManifestChangeKind ## Change classification.
-    commandName*: string       ## Stable Discord command name.
+    commandName*: string ## Stable Discord command name.
 
-  CommandManifest* = object ## Versioned, transport-independent command manifest.
-    schemaRevision*: string ## Pinned Discord schema revision used for generation.
+  CommandManifest* = object ## Versioned, transport-independent command
+                            ## manifest.
+    schemaRevision*: string ## Pinned Discord schema revision used for
+                            ## generation.
     commands*: seq[CommandSpec] ## Commands sorted by name.
 
 func discordCommandKind(kind: CommandKind): int =
@@ -134,29 +136,30 @@ func diff*(current, desired: CommandManifest): seq[ManifestChange] =
 
   var currentIndex = 0
   var desiredIndex = 0
-  while currentIndex < currentCommands.len or desiredIndex < desiredCommands.len:
+  while currentIndex < currentCommands.len or
+      desiredIndex < desiredCommands.len:
     if currentIndex >= currentCommands.len:
-      result.add ManifestChange(kind: mckAdded,
-        commandName: desiredCommands[desiredIndex].name)
+      result.add(ManifestChange(kind: mckAdded,
+        commandName: desiredCommands[desiredIndex].name))
       inc desiredIndex
     elif desiredIndex >= desiredCommands.len:
-      result.add ManifestChange(kind: mckRemoved,
-        commandName: currentCommands[currentIndex].name)
+      result.add(ManifestChange(kind: mckRemoved,
+        commandName: currentCommands[currentIndex].name))
       inc currentIndex
     else:
       let currentCommand = currentCommands[currentIndex]
       let desiredCommand = desiredCommands[desiredIndex]
       if currentCommand.name < desiredCommand.name:
-        result.add ManifestChange(kind: mckRemoved,
-          commandName: currentCommand.name)
+        result.add(ManifestChange(kind: mckRemoved,
+          commandName: currentCommand.name))
         inc currentIndex
       elif desiredCommand.name < currentCommand.name:
-        result.add ManifestChange(kind: mckAdded,
-          commandName: desiredCommand.name)
+        result.add(ManifestChange(kind: mckAdded,
+          commandName: desiredCommand.name))
         inc desiredIndex
       else:
         if commandJson(currentCommand) != commandJson(desiredCommand):
-          result.add ManifestChange(kind: mckChanged,
-            commandName: currentCommand.name)
+          result.add(ManifestChange(kind: mckChanged,
+            commandName: currentCommand.name))
         inc currentIndex
         inc desiredIndex

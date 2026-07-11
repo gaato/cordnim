@@ -20,8 +20,10 @@ suite "libsodium interaction verifier":
       proc decodeHex[N: static int](text: string,
                                     destination: var array[N, byte]) =
         check text.len == N * 2
-        for index in 0 ..< N:
-          destination[index] = byte(parseHexInt(text[index * 2 .. index * 2 + 1]))
+        for index in 0..<N:
+          destination[index] = byte(parseHexInt(
+            text[index * 2 .. index * 2 + 1]
+          ))
 
       var publicKey: array[32, byte]
       var signature: array[64, byte]

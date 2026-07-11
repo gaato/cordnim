@@ -6,20 +6,20 @@ import cordnim/core/[ids, permissions]
 
 type
   InteractionSurface* = enum ## Discord surface where an interaction ran.
-    isGuildChannel,  ## Channel associated with a guild.
-    isBotDm,         ## Direct message with the installed bot user.
+    isGuildChannel, ## Channel associated with a guild.
+    isBotDm, ## Direct message with the installed bot user.
     isPrivateChannel ## Private channel without a guild context.
 
   InstallationKind* = enum ## Principal that authorized the application.
     iiGuildInstall, ## A guild owns the application integration.
-    iiUserInstall   ## A Discord user owns the application integration.
+    iiUserInstall ## A Discord user owns the application integration.
 
   IntegrationOwner* = object ## One authorization owner from interaction data.
     case kind*: InstallationKind ## Guild or user installation class.
     of iiGuildInstall:
-      guildId*: GuildId           ## Guild that authorized the application.
+      guildId*: GuildId ## Guild that authorized the application.
     of iiUserInstall:
-      userId*: UserId             ## User that authorized the application.
+      userId*: UserId ## User that authorized the application.
 
   EffectiveVisibility* = object ## Resolved visibility for one response request.
     requested*: bool ## Whether the caller requested a public response.
@@ -34,15 +34,15 @@ type
 
   InvocationContext* = object ## Identities and permissions for one invocation.
     surface*: InteractionSurface ## Surface where the command was invoked.
-    integrationOwners*: seq[IntegrationOwner]
-      ## Authorization owners reported by Discord.
+    integrationOwners*: seq[IntegrationOwner] ## Authorization owners reported
+      ## by Discord.
     invokingUserId*: UserId ## User who actually invoked the interaction.
     guildId*: Option[GuildId] ## Guild where the invocation happened, if any.
     appPermissions*: Permissions ## Effective application permissions.
-    memberPermissions*: Option[Permissions]
-      ## Effective invoking-member permissions when available.
-    followupBudget*: Option[int]
-      ## Known follow-up limit for user-installed apps, when constrained.
+    memberPermissions*: Option[Permissions] ## Effective invoking-member
+      ## permissions when available.
+    followupBudget*: Option[int] ## Known follow-up limit for user-installed
+      ## apps, when constrained.
     responsePolicy*: ResponsePolicy ## Effective response constraints.
 
 func hasOwner*(context: InvocationContext, kind: InstallationKind): bool =
@@ -63,4 +63,7 @@ func actualVisibility*(context: InvocationContext,
       reason: context.responsePolicy.reason
     )
   else:
-    EffectiveVisibility(requested: requestedPublic, ephemeral: not requestedPublic)
+    EffectiveVisibility(
+      requested: requestedPublic,
+      ephemeral: not requestedPublic
+    )

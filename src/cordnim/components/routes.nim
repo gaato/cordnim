@@ -15,28 +15,28 @@ type
     {.gcsafe, raises: [].} ## Reviewed HMAC-SHA-256 provider.
 
   RouteSigningKey* = object ## One key in a rotation set.
-    id*: uint8              ## Identifier stored in encoded routes.
-    material*: seq[byte]    ## Secret key bytes; callers must source them securely.
+    id*: uint8 ## Identifier stored in encoded routes.
+    material*: seq[byte] ## Secret key bytes; callers must source them securely.
 
   RouteCodec* = object ## Configuration shared by route encoders and decoders.
-    activeKeyId*: uint8     ## Key used for new routes.
+    activeKeyId*: uint8 ## Key used for new routes.
     keys*: seq[RouteSigningKey] ## Active and retiring verification keys.
-    signer*: RouteSigner    ## HMAC-SHA-256 provider.
+    signer*: RouteSigner ## HMAC-SHA-256 provider.
 
   RouteEnvelope* = object ## Verified routing metadata and opaque payload.
-    routeTypeId*: uint16   ## Stable application-assigned route type.
-    version*: uint8        ## Payload schema version.
-    keyId*: uint8          ## Key that authenticated the route.
-    expiresAt*: int64      ## Unix expiry timestamp.
-    payload*: seq[byte]    ## Application payload after verification.
+    routeTypeId*: uint16 ## Stable application-assigned route type.
+    version*: uint8 ## Payload schema version.
+    keyId*: uint8 ## Key that authenticated the route.
+    expiresAt*: int64 ## Unix expiry timestamp.
+    payload*: seq[byte] ## Application payload after verification.
 
   RouteDecodeError* = enum ## Route rejection reason.
-    rdeNone,               ## No error.
-    rdeMalformed,          ## Prefix, base64, or framing is invalid.
-    rdeUnknownKey,         ## Encoded key is no longer accepted.
-    rdeSignatureRejected,  ## Authentication tag did not match.
-    rdeExpired,            ## Route expiry is in the past.
-    rdeSignerUnavailable   ## No cryptographic provider is configured.
+    rdeNone, ## No error.
+    rdeMalformed, ## Prefix, base64, or framing is invalid.
+    rdeUnknownKey, ## Encoded key is no longer accepted.
+    rdeSignatureRejected, ## Authentication tag did not match.
+    rdeExpired, ## Route expiry is in the past.
+    rdeSignerUnavailable ## No cryptographic provider is configured.
 
   RouteDecodeResult* = object ## Result of authenticating and decoding a route.
     case ok*: bool ## Whether authentication and decoding succeeded.
@@ -46,12 +46,12 @@ type
       error*: RouteDecodeError ## Rejection category.
 
 func appendU16(destination: var seq[byte], value: uint16) =
-  destination.add byte(value shr 8)
-  destination.add byte(value and 0xff)
+  destination.add(byte(value shr 8))
+  destination.add(byte(value and 0xff))
 
 func appendU64(destination: var seq[byte], value: uint64) =
   for shift in countdown(56, 0, 8):
-    destination.add byte(value shr shift and 0xff)
+    destination.add(byte(value shr shift and 0xff))
 
 func readU16(source: openArray[byte], offset: int): uint16 =
   uint16(source[offset]) shl 8 or uint16(source[offset + 1])
@@ -74,7 +74,7 @@ func constantTimeEqual(a, b: openArray[byte]): bool =
   if a.len != b.len:
     return false
   var difference = 0'u8
-  for index in 0 ..< a.len:
+  for index in 0..<a.len:
     difference = difference or (a[index] xor b[index])
   difference == 0
 
@@ -103,7 +103,7 @@ proc encodeRoute*(codec: RouteCodec, routeTypeId: uint16, version: uint8,
   framed.appendU64(cast[uint64](expiresAt))
   framed.add payload
   let digest = codec.signer(key.get().material, framed)
-  for index in 0 ..< RouteSignatureBytes:
+  for index in 0..<RouteSignatureBytes:
     framed.add digest[index]
   result = "c." & withoutPadding(base64.encode(framed, safe = true))
   if result.len > 100:
@@ -118,7 +118,7 @@ proc decodeRoute*(codec: RouteCodec, value: string,
     return RouteDecodeResult(ok: false, error: rdeMalformed)
   var decoded: string
   try:
-    decoded = base64.decode(withPadding(value[2 .. ^1]))
+    decoded = base64.decode(withPadding(value[2..^1]))
   except ValueError:
     return RouteDecodeResult(ok: false, error: rdeMalformed)
   if decoded.len < RouteHeaderBytes + RouteSignatureBytes:
@@ -133,7 +133,8 @@ proc decodeRoute*(codec: RouteCodec, value: string,
     return RouteDecodeResult(ok: false, error: rdeUnknownKey)
   # Authenticate the complete frame before interpreting expiry or payload.
   let signedLength = bytes.len - RouteSignatureBytes
-  let digest = codec.signer(key.get().material, bytes.toOpenArray(0, signedLength - 1))
+  let digest = codec.signer(key.get().material,
+    bytes.toOpenArray(0, signedLength - 1))
   if not constantTimeEqual(
       digest.toOpenArray(0, RouteSignatureBytes - 1),
       bytes.toOpenArray(signedLength, bytes.high)):
@@ -149,6 +150,6 @@ proc decodeRoute*(codec: RouteCodec, value: string,
       version: bytes[2],
       keyId: keyId,
       expiresAt: expiry,
-      payload: bytes[RouteHeaderBytes ..< signedLength]
+      payload: bytes[RouteHeaderBytes..<signedLength]
     )
   )

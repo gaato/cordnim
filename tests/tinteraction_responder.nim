@@ -39,15 +39,17 @@ suite "HTTP interaction verification":
 
   test "valid signatures enter the replay cache exactly once":
     var cache = initReplayCache()
-    var config = VerificationConfig(
+    let config = VerificationConfig(
       allowedSkewSeconds: 300,
       maxBodyBytes: 1_024,
       verifier: acceptingVerifier
     )
     let signature = repeat('a', 128)
     let body = @[byte 1, byte 2]
-    check config.verifyInteractionRequest(cache, signature, "1000", body, 1000).kind == ivValid
-    check config.verifyInteractionRequest(cache, signature, "1000", body, 1000).kind == ivReplay
+    check config.verifyInteractionRequest(
+      cache, signature, "1000", body, 1000).kind == ivValid
+    check config.verifyInteractionRequest(
+      cache, signature, "1000", body, 1000).kind == ivReplay
     check config.verifyInteractionRequest(
       cache, signature.toUpperAscii(), "1000", body, 1000).kind == ivReplay
 
@@ -58,11 +60,13 @@ suite "HTTP interaction verification":
       maxBodyBytes: 1_024,
       verifier: acceptingVerifier
     )
-    check config.verifyInteractionRequest(cache, repeat('b', 128), "1", @[], 100).kind ==
-      ivTimestampOutsideWindow
+    check config.verifyInteractionRequest(
+      cache, repeat('b', 128), "1", @[], 100).kind ==
+        ivTimestampOutsideWindow
     config.verifier = nil
-    check config.verifyInteractionRequest(cache, repeat('b', 128), "100", @[], 100).kind ==
-      ivVerifierUnavailable
+    check config.verifyInteractionRequest(
+      cache, repeat('b', 128), "100", @[], 100).kind ==
+        ivVerifierUnavailable
 
   test "extreme signed timestamps cannot overflow skew validation":
     var cache = initReplayCache()

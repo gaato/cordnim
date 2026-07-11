@@ -4,9 +4,11 @@ import std/[hashes, options, tables]
 
 type
   ShardId* = distinct uint16 ## Zero-based shard identifier within a shard set.
-  GatewaySequence* = distinct int64 ## Dispatch sequence used for ordered resume.
+  GatewaySequence* = distinct int64 ## Dispatch sequence used for ordered
+    ## resume.
 
-  SequenceObservation* = enum ## Relationship between a dispatch and stored sequence.
+  SequenceObservation* = enum ## Relationship between a dispatch and stored
+    ## sequence.
     sequenceAdvanced, ## Sequence increased and the resume cursor was updated.
     sequenceRepeated, ## Sequence matched the cursor and storage was unchanged.
     sequenceRegressed ## Sequence decreased and storage was unchanged.
@@ -15,15 +17,16 @@ type
     shardId*: ShardId ## Shard that owns this session.
     sessionId*: string ## Discord session identifier from READY.
     resumeGatewayUrl*: string ## Resume URL supplied by Discord.
-    sequence*: Option[GatewaySequence] ## Latest strictly advancing dispatch sequence.
+    sequence*: Option[GatewaySequence] ## Latest advancing dispatch sequence.
     resumable*: bool ## Whether Discord still permits attempting a resume.
 
-  ResumeCursor* = object ## Complete immutable inputs for a Gateway RESUME payload.
+  ResumeCursor* = object ## Complete immutable Gateway RESUME inputs.
     sessionId*: string ## Discord session identifier.
     resumeGatewayUrl*: string ## Gateway endpoint on which to resume.
     sequence*: GatewaySequence ## Last accepted dispatch sequence.
 
-  MemorySessionStore* = object ## Process-local session store for tests and simple deployments.
+  MemorySessionStore* = object ## Process-local session store for tests and
+    ## simple deployments.
     sessions: Table[ShardId, GatewaySessionState]
 
 func `==`*(a, b: ShardId): bool {.borrow.}
@@ -49,7 +52,10 @@ func initGatewaySession*(shardId: ShardId): GatewaySessionState {.raises: [].} =
   ## Creates non-resumable state for `shardId`.
   GatewaySessionState(shardId: shardId)
 
-proc recordReady*(state: var GatewaySessionState; sessionId, resumeGatewayUrl: sink string) =
+proc recordReady*(
+    state: var GatewaySessionState;
+    sessionId, resumeGatewayUrl: sink string,
+) =
   ## Records READY identifiers and marks the session as potentially resumable.
   ##
   ## A sequence must still be observed before `canResume` returns true.
@@ -90,7 +96,10 @@ func canResume*(state: GatewaySessionState): bool {.raises: [].} =
 proc resumeCursor*(state: GatewaySessionState): ResumeCursor =
   ## Returns complete resume inputs or raises `ValueError` if unavailable.
   if not state.canResume:
-    raise newException(ValueError, "gateway session does not have a resumable cursor")
+    raise newException(
+      ValueError,
+      "gateway session does not have a resumable cursor",
+    )
   ResumeCursor(
     sessionId: state.sessionId,
     resumeGatewayUrl: state.resumeGatewayUrl,
@@ -108,13 +117,14 @@ func initMemorySessionStore*(): MemorySessionStore {.raises: [].} =
   ## Creates an empty process-local session store.
   MemorySessionStore(sessions: initTable[ShardId, GatewaySessionState]())
 
-proc put*(store: var MemorySessionStore; state: GatewaySessionState) {.raises: [].} =
+proc put*(store: var MemorySessionStore; state: GatewaySessionState) {.
+    raises: [].} =
   ## Stores a copy of the latest state for its shard.
   store.sessions[state.shardId] = state
 
 func get*(
     store: MemorySessionStore;
-  shardId: ShardId,
+    shardId: ShardId,
 ): Option[GatewaySessionState] {.raises: [].} =
   ## Returns stored state without performing external I/O.
   if store.sessions.hasKey(shardId):
@@ -122,7 +132,8 @@ func get*(
   else:
     none(GatewaySessionState)
 
-func contains*(store: MemorySessionStore; shardId: ShardId): bool {.raises: [].} =
+func contains*(store: MemorySessionStore; shardId: ShardId): bool {.
+    raises: [].} =
   ## Tests whether state for `shardId` is stored.
   store.sessions.hasKey(shardId)
 

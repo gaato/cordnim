@@ -8,39 +8,38 @@ import ./[model, routes]
 
 type
   RoutePayloadEncoder*[T] = proc(value: T): seq[byte]
-    {.gcsafe, raises: [].}
-    ## Encodes one typed action into a compact application-defined payload.
+    {.gcsafe, raises: [].} ## Encodes one typed action into a compact
+                           ## application-defined payload.
 
   RoutePayloadDecoder*[T] = proc(payload: openArray[byte]): T
-    {.gcsafe, raises: [ValueError].}
-    ## Decodes one authenticated payload version into the current Nim type.
+    {.gcsafe, raises: [ValueError].} ## Decodes one authenticated payload
+                                     ## version into the current Nim type.
 
-  VersionedRouteDecoder*[T] = object
-    ## Migration decoder retained while an older component may still be live.
-    version*: uint8                 ## Payload version accepted by `decode`.
+  VersionedRouteDecoder*[T] = object ## Migration decoder retained while an
+                                     ## older component may still be live.
+    version*: uint8 ## Payload version accepted by `decode`.
     decode*: RoutePayloadDecoder[T] ## Decoder upgrading that version to `T`.
 
-  TypedRouteCodec*[T] = object
-    ## Typed route definition plus its shared authenticated envelope codec.
-    envelope*: RouteCodec                 ## HMAC keys and signing provider.
-    routeTypeId*: uint16                  ## Stable application-assigned type ID.
-    activeVersion*: uint8                 ## Version emitted for new components.
+  TypedRouteCodec*[T] = object ## Typed route definition plus its shared
+                               ## authenticated envelope codec.
+    envelope*: RouteCodec ## HMAC keys and signing provider.
+    routeTypeId*: uint16 ## Stable application-assigned type ID.
+    activeVersion*: uint8 ## Version emitted for new components.
     encodePayload*: RoutePayloadEncoder[T] ## Active-version payload encoder.
     decoders*: seq[VersionedRouteDecoder[T]] ## Active and migration decoders.
 
-  TypedRouteError* = enum
-    ## Stable reason a typed route could not be recovered.
-    treNone,             ## No error.
+  TypedRouteError* = enum ## Stable reason a typed route could not be recovered.
+    treNone, ## No error.
     treEnvelopeRejected, ## HMAC, framing, key, or expiry validation failed.
-    treWrongRouteType,   ## Valid route belongs to a different handler.
-    treUnknownVersion,   ## No migration decoder accepts the payload version.
-    treInvalidPayload    ## Version decoder rejected authenticated bytes.
+    treWrongRouteType, ## Valid route belongs to a different handler.
+    treUnknownVersion, ## No migration decoder accepts the payload version.
+    treInvalidPayload ## Version decoder rejected authenticated bytes.
 
-  TypedRouteDecodeResult*[T] = object
-    ## Result of envelope authentication and typed payload decoding.
+  TypedRouteDecodeResult*[T] = object ## Result of envelope authentication and
+                                      ## typed payload decoding.
     case ok*: bool ## Whether a typed value was recovered.
     of true:
-      value*: T              ## Recovered current-version action value.
+      value*: T ## Recovered current-version action value.
       envelope*: RouteEnvelope ## Verified route metadata.
     of false:
       error*: TypedRouteError ## Typed rejection category.
@@ -53,7 +52,8 @@ proc encode*[T](codec: TypedRouteCodec[T], value: T,
   ## Raises `ValueError` if no encoder is configured or the authenticated value
   ## exceeds Discord's 100-byte component identifier limit.
   if codec.encodePayload.isNil:
-    raise newException(ValueError, "typed component route encoder is unavailable")
+    raise newException(ValueError,
+      "typed component route encoder is unavailable")
   let payload = codec.encodePayload(value)
   codec.envelope.encodeRoute(
     codec.routeTypeId, codec.activeVersion, expiresAt, payload)

@@ -13,45 +13,44 @@ import cordnim/components/[routes, typed_routes]
 import ./[context, router]
 
 type
-  ComponentRouteDispatchError* = object of CatchableError
-    ## Malformed, unauthenticated, expired, or unregistered component route.
+  ComponentRouteDispatchError* = object of CatchableError ## Malformed,
+    ## unauthenticated, expired, or unregistered component route.
 
-  ComponentResponseKind* = enum
-    ## Initial callback produced by a typed component handler.
-    crkMessage,       ## Send a new interaction message (callback type 4).
+  ComponentResponseKind* = enum ## Initial callback produced by a typed
+    ## component handler.
+    crkMessage, ## Send a new interaction message (callback type 4).
     crkUpdateMessage, ## Update the component's source message (type 7).
-    crkModal          ## Present a modal (callback type 9).
+    crkModal ## Present a modal (callback type 9).
 
-  ComponentResponse* = object
-    ## Transport-neutral immediate component response.
+  ComponentResponse* = object ## Transport-neutral immediate component response.
     kind*: ComponentResponseKind ## Discord callback semantic.
-    data*: JsonNode               ## Message or modal callback data.
+    data*: JsonNode ## Message or modal callback data.
 
-  ComponentInvocation* = object
-    ## Verified message-component interaction supplied to handlers.
+  ComponentInvocation* = object ## Verified message-component interaction
+    ## supplied to handlers.
     context*: InvocationContext ## Installation owner and effective permissions.
-    componentType*: int         ## Raw Discord component type number.
-    values*: seq[string]        ## Select values, empty for buttons.
-    resolved*: JsonNode         ## Lossless resolved entity maps.
-    raw*: JsonNode              ## Complete interaction for raw escape hatches.
+    componentType*: int ## Raw Discord component type number.
+    values*: seq[string] ## Select values, empty for buttons.
+    resolved*: JsonNode ## Lossless resolved entity maps.
+    raw*: JsonNode ## Complete interaction for raw escape hatches.
 
-  ComponentCtx*[S] = object
-    ## Typed application services plus verified component invocation metadata.
-    services*: S                    ## Application-owned dependency container.
+  ComponentCtx*[S] = object ## Typed application services plus verified
+    ## component invocation metadata.
+    services*: S ## Application-owned dependency container.
     invocation*: ComponentInvocation ## Current component activation.
 
   ComponentHandler*[S, T] = proc(context: ComponentCtx[S], action: T):
-    Future[ComponentResponse] {.closure, gcsafe, raises: [].}
-    ## Handler for one decoded typed action.
+    Future[ComponentResponse] {.closure, gcsafe, raises: [].} ## Handler for one
+    ## decoded typed action.
 
   ErasedComponentHandler[S] = proc(services: S,
     invocation: ComponentInvocation, envelope: RouteEnvelope):
     Future[ComponentResponse] {.closure, gcsafe, raises: [].}
 
-  ComponentRouter*[S] = ref object
-    ## Typed persistent route registry using one shared HMAC key ring.
-    services*: S            ## Application-owned dependency container.
-    envelope*: RouteCodec   ## Shared HMAC verification and rotation config.
+  ComponentRouter*[S] = ref object ## Typed persistent route registry using one
+    ## shared HMAC key ring.
+    services*: S ## Application-owned dependency container.
+    envelope*: RouteCodec ## Shared HMAC verification and rotation config.
     handlers: Table[uint16, ErasedComponentHandler[S]]
 
 proc replyComponent*(data: sink JsonNode): ComponentResponse =
@@ -173,7 +172,7 @@ proc decodeInvocation(interaction: JsonNode): ComponentInvocation =
       if value.kind != JString:
         raise newException(ComponentRouteDispatchError,
           "component values must be strings")
-      result.values.add value.getStr()
+      result.values.add(value.getStr())
 
 proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
                nowUnixSeconds: int64): Future[JsonNode] {.async.} =

@@ -73,14 +73,14 @@ func sha256Hex(input: string): string =
   var offset = 0
   while offset < message.len:
     var words: array[64, uint32]
-    for index in 0 .. 15:
+    for index in 0..15:
       let start = offset + index * 4
       words[index] =
         (uint32(message[start]) shl 24) or
         (uint32(message[start + 1]) shl 16) or
         (uint32(message[start + 2]) shl 8) or
         uint32(message[start + 3])
-    for index in 16 .. 63:
+    for index in 16..63:
       let sigma0 = rotateRight(words[index - 15], 7) xor
         rotateRight(words[index - 15], 18) xor
         (words[index - 15] shr 3)
@@ -99,7 +99,7 @@ func sha256Hex(input: string): string =
     var g = hash[6]
     var h = hash[7]
 
-    for index in 0 .. 63:
+    for index in 0..63:
       let choice = (e and f) xor ((not e) and g)
       let majority = (a and b) xor (a and c) xor (b and c)
       let bigSigma0 = rotateRight(a, 2) xor rotateRight(a, 13) xor
@@ -304,7 +304,8 @@ proc contentSchema(container: JsonNode): string =
       return schemaLabel(media["schema"])
 
 proc responseSchema(operation: JsonNode): string =
-  if not operation.hasKey("responses") or operation["responses"].kind != JObject:
+  if not operation.hasKey("responses") or
+      operation["responses"].kind != JObject:
     return ""
   let responses = operation["responses"]
   for status in responses.sortedKeys:
@@ -317,7 +318,7 @@ func resourceName(path: string): string =
   let start = if path.len > 0 and path[0] == '/': 1 else: 0
   let separator = path.find('/', start)
   let raw = if separator < 0: path[start .. ^1]
-    else: path[start ..< separator]
+    else: path[start..<separator]
   snakeName(raw)
 
 func methodName(value: string): string =
@@ -336,27 +337,29 @@ proc collectOperations(spec: JsonNode): seq[Operation] =
   for path in paths.sortedKeys:
     let pathItem = paths[path]
     for httpMethod in ["get", "post", "put", "patch", "delete"]:
-      if not pathItem.hasKey(httpMethod):
-        continue
-      let operation = pathItem[httpMethod]
-      if not operation.hasKey("operationId"):
-        fail httpMethod.toUpperAscii & " " & path & " has no operationId"
-      let operationId = operation["operationId"].getStr
-      let hasBody = operation.hasKey("requestBody")
-      let request = if hasBody: contentSchema(operation["requestBody"]) else: ""
-      let deprecated = operation.hasKey("deprecated") and
-        operation["deprecated"].kind == JBool and operation["deprecated"].getBool
-      result.add Operation(
-        resource: resourceName(path),
-        path: path,
-        httpMethod: httpMethod,
-        operationId: operationId,
-        nimName: lowerCamel(operationId),
-        requestSchema: request,
-        responseSchema: responseSchema(operation),
-        hasRequestBody: hasBody,
-        deprecated: deprecated
-      )
+      if pathItem.hasKey(httpMethod):
+        let operation = pathItem[httpMethod]
+        if not operation.hasKey("operationId"):
+          fail httpMethod.toUpperAscii & " " & path & " has no operationId"
+        let operationId = operation["operationId"].getStr
+        let hasBody = operation.hasKey("requestBody")
+        let request =
+          if hasBody: contentSchema(operation["requestBody"])
+          else: ""
+        let deprecated = operation.hasKey("deprecated") and
+          operation["deprecated"].kind == JBool and
+          operation["deprecated"].getBool
+        result.add Operation(
+          resource: resourceName(path),
+          path: path,
+          httpMethod: httpMethod,
+          operationId: operationId,
+          nimName: lowerCamel(operationId),
+          requestSchema: request,
+          responseSchema: responseSchema(operation),
+          hasRequestBody: hasBody,
+          deprecated: deprecated
+        )
 
 func schemaCategory(name: string): string =
   if name.startsWith("Application") or name.startsWith("Activities") or
@@ -494,7 +497,8 @@ proc generateModels(
     content.add "type\n"
     for schemaName in categories[category]:
       let nimName = typeName(schemaName)
-      content.add "  " & nimName & "* = object ## Lossless raw representation " &
+      content.add "  " & nimName &
+        "* = object ## Lossless raw representation " &
         "of OpenAPI schema `" & schemaName & "`.\n"
       content.add "    raw*: JsonNode ## Complete JSON payload, including " &
         "fields unknown to this schema revision.\n\n"
@@ -510,10 +514,12 @@ proc generateModels(
   index.add "\nexport model\n"
   for category in categoryNames:
     index.add "export " & category & "\n"
-  index.add "\nconst schemaNames*: array[" & $schemaNames.len & ", string] = [\n"
+  index.add "\nconst schemaNames*: array[" & $schemaNames.len &
+    ", string] = [\n"
   for schemaName in schemaNames:
     index.add "  " & nimQuote(schemaName) & ",\n"
-  index.add "] ## Canonical OpenAPI component names available in this snapshot.\n"
+  index.add "] ## Canonical OpenAPI component names available in this " &
+    "snapshot.\n"
   files.addFile("src/cordnim/raw/models.nim", index)
 
 proc generateRoutes(
@@ -532,7 +538,8 @@ proc generateRoutes(
   for resource in resourceNames:
     var content = generatedPreamble(
       lock,
-      "Stable raw Discord HTTP routes in the `" & resource & "` resource group.",
+      "Stable raw Discord HTTP routes in the `" & resource &
+        "` resource group.",
     )
     content.add "import ../route\n\n"
     content.add "const\n"
@@ -541,8 +548,10 @@ proc generateRoutes(
       content.add "    httpMethod: " & methodName(operation.httpMethod) & ",\n"
       content.add "    pathTemplate: " & nimQuote(operation.path) & ",\n"
       content.add "    operationId: " & nimQuote(operation.operationId) & ",\n"
-      content.add "    requestSchema: " & nimQuote(operation.requestSchema) & ",\n"
-      content.add "    responseSchema: " & nimQuote(operation.responseSchema) & ",\n"
+      content.add "    requestSchema: " &
+        nimQuote(operation.requestSchema) & ",\n"
+      content.add "    responseSchema: " &
+        nimQuote(operation.responseSchema) & ",\n"
       content.add "    hasRequestBody: " & $operation.hasRequestBody & ",\n"
       content.add "    deprecated: " & $operation.deprecated & "\n"
       content.add "  ) ## Route metadata for `" &
@@ -572,7 +581,8 @@ proc generateRoutes(
     index.add "  " & operation.nimName & ",\n"
   index.add "] ## Every HTTP operation in the pinned stable schema.\n\n"
   index.add "func findRoute*(operationId: string): Option[RawRoute] =\n"
-  index.add "  ## Looks up generated route metadata by its OpenAPI operation ID.\n"
+  index.add "  ## Looks up generated route metadata by its " &
+    "OpenAPI operation ID.\n"
   index.add "  for route in allRoutes:\n"
   index.add "    if route.operationId == operationId:\n"
   index.add "      return some(route)\n"
@@ -583,7 +593,8 @@ proc generateRouteInventory(
     files: var seq[GeneratedFile], lock: LockInfo,
     operations: openArray[Operation]
 ) =
-  var content = "# Generated by tools/schema_codegen.nim; do not edit by hand.\n"
+  var content =
+    "# Generated by tools/schema_codegen.nim; do not edit by hand.\n"
   content.add "# source_commit\t" & lock.sourceCommit & "\n"
   content.add "method\tpath\toperation_id\trequest_schema\tresponse_schema\n"
   for operation in operations:
@@ -655,14 +666,13 @@ proc applyGeneratedFiles(
   for generated in files:
     let path = root / generated.relativePath
     let current = if fileExists(path): readFile(path) else: ""
-    if current == generated.content:
-      continue
-    if checkOnly:
-      drift.add generated.relativePath
-    else:
-      createDir(path.parentDir)
-      writeFile(path, generated.content)
-      echo "generated ", generated.relativePath
+    if current != generated.content:
+      if checkOnly:
+        drift.add generated.relativePath
+      else:
+        createDir(path.parentDir)
+        writeFile(path, generated.content)
+        echo "generated ", generated.relativePath
 
   if drift.len > 0:
     for path in drift:

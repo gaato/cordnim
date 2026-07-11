@@ -73,7 +73,7 @@ proc wireName(sourceName: string): string =
   # Nim permits camelCase parameter names while Discord command option names
   # use lowercase ASCII. Preserve word boundaries for readable manifests.
   for character in sourceName:
-    if character in {'A' .. 'Z'}:
+    if character in {'A'..'Z'}:
       if result.len > 0:
         result.add('_')
       result.add(character.toLowerAscii())
@@ -81,12 +81,12 @@ proc wireName(sourceName: string): string =
       result.add(character)
 
 proc validCommandName(name: string): bool =
-  if name.runeLen notin 1 .. 32:
+  if name.runeLen notin 1..32:
     return false
   for character in name.runes:
     let value = int(character)
     if value < 128:
-      if char(value) notin {'a' .. 'z', '0' .. '9', '-', '_'}:
+      if char(value) notin {'a'..'z', '0'..'9', '-', '_'}:
         return false
     elif not character.isAlpha or character.isUpper or character.isTitle:
       return false
@@ -106,7 +106,7 @@ proc enumFields(typeNode: NimNode): seq[string] =
   let implementation = typeNode.getTypeImpl()
   if implementation.kind != nnkEnumTy:
     return
-  for index in 1 ..< implementation.len:
+  for index in 1..<implementation.len:
     let field = implementation[index]
     case field.kind
     of nnkSym, nnkIdent:
@@ -140,8 +140,11 @@ proc optionKind(typeNode: NimNode, parameter: NimNode): CommandOptionKind =
   elif rendered.endsWith("Attachment"):
     cokAttachment
   else:
-    error("unsupported Discord command option type '" & rendered &
-      "'; add a typed transformer or use a Discord-native option type", parameter)
+    error(
+      "unsupported Discord command option type '" & rendered &
+        "'; add a typed transformer or use a Discord-native option type",
+      parameter
+    )
 
 proc choiceExpr(name: string): NimNode =
   let choiceType = bindSym"CommandChoice"
@@ -243,10 +246,13 @@ proc commandInfo(handler: NimNode): CommandInfo =
 
   result.name = metadata[1].strVal
   if not validCommandName(result.name):
-    error("Discord command name must contain 1-32 lowercase letters, numbers, " &
-      "hyphens, or underscores", handler)
+    error(
+      "Discord command name must contain 1-32 lowercase letters, numbers, " &
+        "hyphens, or underscores",
+      handler
+    )
   let description = metadata[2].strVal
-  if description.runeLen notin 1 .. 100:
+  if description.runeLen notin 1..100:
     error("Discord command description must contain 1-100 characters", handler)
 
   let parameters = implementation[3]
@@ -269,16 +275,22 @@ proc commandInfo(handler: NimNode): CommandInfo =
     error("command procedure must return CommandResult or " &
       "Future[CommandResult] from Chronos", handler)
 
-  for index in 2 ..< parameters.len:
+  for index in 2..<parameters.len:
     let definition = parameters[index]
     for symbolIndex in 0 ..< definition.len - 2:
       result.parameters.add(parameterInfo(definition, definition[symbolIndex]))
 
   let kindOrdinal = metadata[5].intVal.int
   if kindOrdinal != ord(ckChatInput) and result.parameters.len > 0:
-    error("user and message context commands cannot declare slash options", handler)
+    error(
+      "user and message context commands cannot declare slash options",
+      handler
+    )
   if result.parameters.len > 25:
-    error("Discord chat-input commands permit at most 25 top-level options", handler)
+    error(
+      "Discord chat-input commands permit at most 25 top-level options",
+      handler
+    )
 
   let installsExpr = enumSetExpr(metadata[3], bindSym"CommandInstallContext",
     ["guildInstall", "userInstall"])
@@ -295,7 +307,10 @@ proc commandInfo(handler: NimNode): CommandInfo =
   if delayExpr.intVal < 0:
     error("autoDeferAfterMs cannot be negative", handler)
   if ackOrdinal != ord(ackManual) and delayExpr.intVal >= 3_000:
-    error("automatic defer must run before Discord's 3-second ACK deadline", handler)
+    error(
+      "automatic defer must run before Discord's 3-second ACK deadline",
+      handler
+    )
 
   var optionsExpr = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
   for parameter in result.parameters:
@@ -419,15 +434,28 @@ macro commandSet*(handlers: varargs[typed]): untyped =
   ## services type, and return `CommandResult` or Chronos
   ## `Future[CommandResult]`. The resulting registry is sorted by command name,
   ## so manifest output does not depend on registration order.
+  ##
+  ## Parameters map from strings, booleans, integer ranges, floating-point
+  ## values, enums, and typed user, channel, role, and attachment values.
+  ## `Option[T]` and Nim defaults control requiredness; camel-case parameter
+  ## names become snake-case Discord option names. A decode failure returns
+  ## `crInvalidOptions` without invoking its handler.
+  ##
+  ## Calling `commandSet` without handlers, duplicate command names, mixed
+  ## services types, invalid command metadata, and unsupported parameter types
+  ## are compile-time errors.
   if handlers.len == 0:
-    error("empty commandSet has no services type; use initCommandSet[Services]()")
+    error(
+      "empty commandSet has no services type; use initCommandSet[Services]()"
+    )
 
   var commands: seq[CommandInfo]
   for handler in handlers:
     commands.add(commandInfo(handler))
-  commands.sort(proc (left, right: CommandInfo): int = cmp(left.name, right.name))
+  commands.sort(proc (left, right: CommandInfo): int =
+    cmp(left.name, right.name))
 
-  for index in 1 ..< commands.len:
+  for index in 1..<commands.len:
     if commands[index - 1].name == commands[index].name:
       error("duplicate Discord command name '" & commands[index].name & "'",
         commands[index].handler)

@@ -3,10 +3,11 @@
 import std/[deques, options]
 
 type
-  EventPolicyKind* = enum ## Ordering model applied to dispatched Gateway events.
-    orderedEvents,     ## Deliver all events through one ordered lane.
-    concurrentEvents,  ## Round-robin events across a bounded lane set.
-    partitionedEvents  ## Keep each partition ordered while running partitions concurrently.
+  EventPolicyKind* = enum ## Ordering model applied to dispatched Gateway
+    ## events.
+    orderedEvents, ## Deliver all events through one ordered lane.
+    concurrentEvents, ## Round-robin events across a bounded lane set.
+    partitionedEvents ## Keep partitions ordered across concurrent execution.
 
   EventPolicy* = object ## Validated dispatch limits used by a Gateway runtime.
     kind*: EventPolicyKind ## Ordering model for event handlers.
@@ -14,7 +15,7 @@ type
     maxConcurrent*: int ## Maximum handler lanes active at once.
     maxPartitions*: int ## Number of stable partition lanes.
 
-  BoundedQueue*[T] = object ## FIFO that rejects writes once its fixed capacity is reached.
+  BoundedQueue*[T] = object ## FIFO that rejects writes at fixed capacity.
     capacity: int
     values: Deque[T]
 
@@ -22,7 +23,7 @@ type
     policy: EventPolicy
     nextConcurrentLane: int
 
-proc orderedPolicy*(queueCapacity: Positive): EventPolicy {.raises: [].} =
+func orderedPolicy*(queueCapacity: Positive): EventPolicy {.raises: [].} =
   ## Creates a single-lane policy that preserves global event order.
   EventPolicy(
     kind: orderedEvents,
@@ -31,7 +32,7 @@ proc orderedPolicy*(queueCapacity: Positive): EventPolicy {.raises: [].} =
     maxPartitions: 1,
   )
 
-proc concurrentPolicy*(
+func concurrentPolicy*(
     queueCapacity, maxConcurrent: Positive,
 ): EventPolicy {.raises: [].} =
   ## Creates a round-robin policy with at most `maxConcurrent` handler lanes.
@@ -42,7 +43,7 @@ proc concurrentPolicy*(
     maxPartitions: 1,
   )
 
-proc partitionedPolicy*(
+func partitionedPolicy*(
     queueCapacity, maxPartitions: Positive,
 ): EventPolicy {.raises: [].} =
   ## Creates a policy that maps equal partition keys to the same ordered lane.
@@ -57,7 +58,8 @@ func initBoundedQueue*[T](capacity: Positive): BoundedQueue[T] {.raises: [].} =
   ## Creates an empty queue whose capacity cannot grow implicitly.
   BoundedQueue[T](capacity: int(capacity), values: initDeque[T]())
 
-proc tryAdd*[T](queue: var BoundedQueue[T]; value: sink T): bool {.raises: [].} =
+proc tryAdd*[T](queue: var BoundedQueue[T]; value: sink T): bool {.
+    raises: [].} =
   ## Adds `value`, returning false without mutation when the queue is full.
   if queue.values.len >= queue.capacity:
     return false
@@ -83,13 +85,14 @@ proc clear*[T](queue: var BoundedQueue[T]) {.raises: [].} =
   ## Removes every queued value while retaining the configured capacity.
   queue.values.clear()
 
-func initDispatchLaneChooser*(policy: EventPolicy): DispatchLaneChooser {.raises: [].} =
+func initDispatchLaneChooser*(policy: EventPolicy): DispatchLaneChooser {.
+    raises: [].} =
   ## Creates a lane selector whose round-robin cursor starts at lane zero.
   DispatchLaneChooser(policy: policy)
 
 proc chooseLane*(
     chooser: var DispatchLaneChooser;
-  partitionKey: uint64,
+    partitionKey: uint64,
 ): int {.raises: [].} =
   ## Selects a stable zero-based lane according to the configured policy.
   case chooser.policy.kind
