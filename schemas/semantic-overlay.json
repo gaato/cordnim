@@ -1,0 +1,75 @@
+{
+  "revision": 2,
+  "description": "Semantic corrections applied after parsing Discord's preview OpenAPI document.",
+  "rules": [
+    {
+      "target": "#/components/schemas/SnowflakeType",
+      "semantic": "snowflake",
+      "representation": "decimal-string-at-json-boundary",
+      "reason": "Snowflakes are unsigned 64-bit domain identifiers even when the schema accepts an integer representation."
+    },
+    {
+      "target": "**/properties/permissions",
+      "semantic": "extensible-bits",
+      "representation": "decimal-string-arbitrary-width",
+      "reason": "Permission values must preserve bits unknown to this schema revision."
+    },
+    {
+      "target": "**/properties/flags_new",
+      "semantic": "extensible-bits",
+      "representation": "decimal-string-arbitrary-width",
+      "reason": "flags_new carries flag values that cannot be represented by the legacy fixed-width field."
+    },
+    {
+      "target": "#/components/schemas/*PatchRequestPartial",
+      "semantic": "patch-object",
+      "representation": "unset-null-value",
+      "reason": "Omission and explicit JSON null have different PATCH behavior."
+    },
+    {
+      "target": "**/x-discord-union",
+      "semantic": "exclusive-union",
+      "representation": "one-of",
+      "reason": "Discord documents x-discord-union anyOf declarations as exclusive alternatives."
+    },
+    {
+      "target": "**/enum",
+      "semantic": "open-enum",
+      "representation": "raw-value-plus-known-view",
+      "reason": "Unknown enum values must survive decoding and re-encoding."
+    },
+    {
+      "target": "**/properties/allow|**/properties/deny",
+      "semantic": "extensible-bits",
+      "representation": "decimal-string-arbitrary-width",
+      "reason": "Permission overwrite values have the same future-width contract as permissions."
+    },
+    {
+      "target": "#/components/schemas/MessageEditRequestPartial",
+      "semantic": "irreversible-components-v2-transition",
+      "representation": "separate-legacy-and-v2-types",
+      "reason": "IS_COMPONENTS_V2 cannot be unset and legacy content, embeds, stickers, and polls must be cleared during the upgrade."
+    },
+    {
+      "target": "#/components/schemas/*ComponentForMessageRequest",
+      "semantic": "legal-component-tree",
+      "representation": "validated-parent-child-tree-max-40",
+      "reason": "OpenAPI unions do not express every nesting, cardinality, target exclusivity, or total component-count rule."
+    },
+    {
+      "target": "#/components/schemas/*ComponentForModalRequest",
+      "semantic": "modal-label-tree",
+      "representation": "typed-form-schema-and-decoder",
+      "reason": "Modal-only components, Label wrappers, submitted values, and resolved entities require form-specific validation."
+    }
+  ],
+  "constraints": {
+    "preserveUnknownObjectFields": true,
+    "preserveUnknownEnumValues": true,
+    "preserveUnknownFlagBits": true,
+    "treatOptionalAndNullableSeparately": true,
+    "componentsV2Irreversible": true,
+    "maximumMessageComponents": 40,
+    "legacyAndV2MessageFieldsExclusive": true
+  }
+}

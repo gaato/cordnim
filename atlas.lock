@@ -1,0 +1,89 @@
+{
+  "items": {
+    "nim-chronos": {
+      "dir": "$deps/chronos",
+      "url": "https://github.com/status-im/nim-chronos",
+      "commit": "447b3fd8ae0619e847bff46d823d56779e21851b",
+      "version": ""
+    },
+    "nim-results": {
+      "dir": "$deps/results",
+      "url": "https://github.com/arnetheduck/nim-results",
+      "commit": "df8113dda4c2d74d460a8fa98252b0b771bf1f27",
+      "version": ""
+    },
+    "nim-bearssl": {
+      "dir": "$deps/bearssl",
+      "url": "https://github.com/status-im/nim-bearssl",
+      "commit": "7c307026d4d86dc560880c6fa716f5e626ff7fc2",
+      "version": ""
+    },
+    "nim-stew": {
+      "dir": "$deps/stew",
+      "url": "https://github.com/status-im/nim-stew",
+      "commit": "4382b18f04b3c43c8409bfcd6b62063773b2bbaa",
+      "version": ""
+    },
+    "nim-http-utils": {
+      "dir": "$deps/httputils",
+      "url": "https://github.com/status-im/nim-http-utils",
+      "commit": "a9ca86095e262251d8ebafa1c6504fd476c41e43",
+      "version": ""
+    },
+    "nim-unittest2": {
+      "dir": "$deps/unittest2",
+      "url": "https://github.com/status-im/nim-unittest2",
+      "commit": "26f2ef3ae0ec72a2a75bfe557e02e88f6a31c189",
+      "version": ""
+    }
+  },
+  "nimcfg": [
+    "############# begin Atlas config section ##########",
+    "--noNimblePath",
+    "--path:\"deps/bearssl\"",
+    "--path:\"deps/chronos\"",
+    "--path:\"deps/httputils\"",
+    "--path:\"deps/results\"",
+    "--path:\"deps/stew\"",
+    "--path:\"deps/unittest2\"",
+    "############# end Atlas config section   ##########",
+    ""
+  ],
+  "nimbleFile": {
+    "filename": "cordnim.nimble",
+    "content": [
+      "version       = \"0.1.0\"",
+      "author        = \"Gakuto Furuya\"",
+      "description   = \"A type-safe Discord application runtime for Nim\"",
+      "license       = \"MPL-2.0\"",
+      "srcDir        = \"src\"",
+      "bin           = @[\"cordnim\"]",
+      "",
+      "requires \"nim >= 2.2.10 & < 2.3.0\"",
+      "requires \"chronos >= 4.0.4 & < 5.0.0\"",
+      "requires \"results >= 0.5.1 & < 0.6.0\"",
+      "requires \"bearssl >= 0.2.11 & < 0.3.0\"",
+      "",
+      "task test, \"Run the ORC test suite\":",
+      "  exec \"nim c -r --mm:orc --nimcache:build/test-runner --path:src tests/test_all.nim\"",
+      "",
+      "task check, \"Compile the public modules without linking\":",
+      "  exec \"nim check --mm:orc --nimcache:build/check --path:src src/cordnim.nim\"",
+      "",
+      "task docs, \"Build API documentation\":",
+      "  exec \"nim doc --project --mm:orc --path:src --outdir:htmldocs src/cordnim.nim\"",
+      "",
+      "task schema, \"Regenerate the pinned Discord raw layer\":",
+      "  exec \"nim c -r --mm:orc --nimcache:build/schema --path:src tools/schema_codegen.nim\"",
+      "",
+      "task schemaCheck, \"Fail if committed generated sources are stale\":",
+      "  exec \"nim c -r --mm:orc --nimcache:build/schema-check --path:src tools/schema_codegen.nim -- --check\"",
+      ""
+    ]
+  },
+  "hostOS": "linux",
+  "hostCPU": "amd64",
+  "nimVersion": "2.2.10",
+  "gccVersion": "15.3.0",
+  "clangVersion": "22.1.7"
+}

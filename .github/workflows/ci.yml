@@ -1,0 +1,224 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Every job is read-only. Checkout also disables credential persistence so
+# repository credentials are not left in Git configuration for later steps.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CORDNIM_NIM_VERSION: "2.2.10"
+
+jobs:
+  tier1:
+    name: ORC / ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x86_64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: macos-arm64
+            runner: macos-15
+          - platform: windows-x86_64
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      # Full SHAs pin reviewed action code; comments record the release audited.
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: ${{ env.CORDNIM_NIM_VERSION }}
+          parent-nim-install-directory: ${{ runner.temp }}
+
+      # Nim 2.2 ships Atlas. --noexec replays only the commits in atlas.lock and
+      # refuses dependency build actions, which keeps PR dependency setup inert.
+      - name: Replay pinned core dependencies
+        run: atlas --noexec rep atlas.lock
+
+      - name: Check public core API
+        run: nim check --mm:orc --path:src src/cordnim.nim
+
+      - name: Build command-line tools
+        run: >-
+          nim c --mm:orc --path:src --nimcache:build/nimcache
+          --out:build/cordnim src/cordnim.nim
+
+      - name: Run ORC tests
+        run: nim c -r --mm:orc --path:src tests/test_all.nim
+
+      - name: Check optional Voice package without libdave
+        run: nim check --mm:orc --path:voice/src voice/src/cordnim_voice.nim
+
+  schema:
+    name: Generated schema is current
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: ${{ env.CORDNIM_NIM_VERSION }}
+          parent-nim-install-directory: ${{ runner.temp }}
+
+      # Atlas replay restores the Nimble file recorded in the lock. Check the
+      # record first so a stale lock cannot hide a manifest or path change.
+      - name: Verify Atlas lock metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("atlas.lock").read_text(encoding="utf-8"))
+          expected_nimble = "\n".join(lock["nimbleFile"]["content"])
+          expected_config = "\n".join(lock["nimcfg"])
+          if Path("cordnim.nimble").read_text(encoding="utf-8") != expected_nimble:
+              raise SystemExit("cordnim.nimble differs from atlas.lock; run atlas pin")
+          if Path("nim.cfg").read_text(encoding="utf-8") != expected_config:
+              raise SystemExit("nim.cfg differs from atlas.lock; run atlas pin")
+          PY
+
+      - name: Compare generated raw API with pinned schema
+        run: >-
+          nim c -r --mm:orc --path:src --nimcache:build/schema-nimcache
+          --out:build/schema_codegen tools/schema_codegen.nim -- --check
+
+  docs:
+    name: API documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: ${{ env.CORDNIM_NIM_VERSION }}
+          parent-nim-install-directory: ${{ runner.temp }}
+
+      - name: Replay pinned core dependencies
+        run: atlas --noexec rep atlas.lock
+
+      # --project makes nim doc traverse exported modules instead of checking
+      # only the facade, so their comments and cross-links are rendered too.
+      - name: Generate core API documentation
+        run: >-
+          nim doc --project --mm:orc --path:src
+          --outdir:htmldocs src/cordnim.nim
+
+      - name: Generate optional Voice API documentation
+        run: >-
+          nim doc --project --mm:orc --path:voice/src
+          --outdir:htmldocs/voice voice/src/cordnim_voice.nim
+
+      - name: Require generated HTML
+        shell: bash
+        run: test -n "$(find htmldocs -type f -name '*.html' -print -quit)"
+
+      - name: Upload API documentation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cordnim-api-docs
+          path: htmldocs/
+          if-no-files-found: error
+          retention-days: 7
+
+  devel:
+    name: Nim devel (advisory)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Compiler development snapshots can regress independently of cordnim.
+    # Keep this visible without blocking merges validated by the pinned release.
+    continue-on-error: true
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up latest Nim devel snapshot
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: devel
+          use-nightlies: "true"
+          parent-nim-install-directory: ${{ runner.temp }}
+          # Nightly lookup uses GitHub's API; this is the read-only job token.
+          repo-token: ${{ github.token }}
+
+      - name: Replay pinned core dependencies
+        run: atlas --noexec rep atlas.lock
+
+      - name: Check public core API
+        run: nim check --mm:orc --path:src src/cordnim.nim
+
+      - name: Run ORC tests
+        run: nim c -r --mm:orc --path:src tests/test_all.nim
+
+  voice-libdave:
+    name: Official libdave dynamic binding / Linux x86_64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: ${{ env.CORDNIM_NIM_VERSION }}
+          parent-nim-install-directory: ${{ runner.temp }}
+
+      # The upstream release has no checksum asset. The digest below was
+      # calculated from Discord's v1.1.1/cpp Linux-X64 release archive; checking
+      # it makes a moved tag or replaced asset fail closed.
+      - name: Fetch pinned official libdave v1.1.1/cpp
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/libdave-Linux-X64-boringssl.zip"
+          destination="$RUNNER_TEMP/libdave"
+          curl --fail --location --retry 3 --retry-all-errors \
+            --proto '=https' --tlsv1.2 \
+            'https://github.com/discord/libdave/releases/download/v1.1.1/cpp/libdave-Linux-X64-boringssl.zip' \
+            --output "$archive"
+          printf '%s  %s\n' \
+            '2470a131dbf39a820d893ba3d6f01373fc597868caffd6a30a8746e441ed5ede' \
+            "$archive" | sha256sum --check --strict
+          mkdir -p "$destination"
+          unzip -q "$archive" -d "$destination"
+
+      - name: Load official libdave through the opt-in binding
+        env:
+          LD_LIBRARY_PATH: ${{ runner.temp }}/libdave/lib
+        run: >-
+          nim c -r --mm:orc --path:voice/src -d:cordnimVoiceLibdave
+          tests/tvoice_libdave_integration.nim

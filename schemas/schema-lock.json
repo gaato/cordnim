@@ -1,0 +1,10 @@
+{
+  "apiVersion": 10,
+  "schemaRevision": "2026-07-11",
+  "sourceRepository": "https://github.com/discord/discord-api-spec",
+  "sourceCommit": "2c0a5ddffb9c9cf9b3a8826454758397a6b4804b",
+  "standardSpec": "discord-api-spec/openapi.json",
+  "standardSpecSha256": "ce7cb08e4d2542ddba338315b1e78dc1bb7eaf16f8d298b582b70d61e259ea72",
+  "overlay": "semantic-overlay.json",
+  "overlayRevision": 2
+}

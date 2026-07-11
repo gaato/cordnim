@@ -1,0 +1,128 @@
+name: Fuzz smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "fuzz/**"
+      - "src/cordnim/interactions/verification.nim"
+      - "src/cordnim/components/routes.nim"
+      - "src/cordnim/raw/**"
+      - "cordnim.nimble"
+      - ".github/workflows/fuzz.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "fuzz/**"
+      - "src/cordnim/interactions/verification.nim"
+      - "src/cordnim/components/routes.nim"
+      - "src/cordnim/raw/**"
+      - "cordnim.nimble"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    - cron: "17 3 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Pull requests stay fast; the weekly run gets a longer but still bounded pass.
+  FUZZ_SECONDS: ${{ github.event_name == 'schedule' && '60' || '15' }}
+
+jobs:
+  fuzz:
+    name: libFuzzer + ASan + UBSan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Nim 2.2.10
+        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        with:
+          nim-version: "2.2.10"
+          parent-nim-install-directory: ${{ runner.temp }}
+
+      - name: Verify Atlas lock metadata
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          lock = json.loads(Path("atlas.lock").read_text(encoding="utf-8"))
+          expected_nimble = "\n".join(lock["nimbleFile"]["content"])
+          expected_config = "\n".join(lock["nimcfg"])
+          if Path("cordnim.nimble").read_text(encoding="utf-8") != expected_nimble:
+              raise SystemExit("cordnim.nimble differs from atlas.lock; run atlas pin")
+          if Path("nim.cfg").read_text(encoding="utf-8") != expected_config:
+              raise SystemExit("nim.cfg differs from atlas.lock; run atlas pin")
+          PY
+
+      # Atlas is distributed with Nim 2.2. Replay immutable commits without
+      # allowing dependency build actions to execute in pull-request jobs.
+      - name: Replay pinned core dependencies
+        run: atlas --noexec rep atlas.lock
+
+      # Targets are discovered so adding a parser does not require duplicating
+      # build logic here. Each target must have a matching seed corpus directory.
+      - name: Build and run bounded fuzz targets
+        shell: bash
+        env:
+          ASAN_OPTIONS: detect_leaks=1:allocator_may_return_null=0:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          set -euo pipefail
+          if [[ ! -d fuzz/targets ]]; then
+            echo "No fuzz targets are present yet; skipping the smoke run."
+            exit 0
+          fi
+
+          mapfile -t targets < <(find fuzz/targets -maxdepth 1 -type f -name '*.nim' -print | sort)
+          if (( ${#targets[@]} == 0 )); then
+            echo "No fuzz targets are present yet; skipping the smoke run."
+            exit 0
+          fi
+
+          mkdir -p build/fuzz/bin build/fuzz/corpus build/fuzz/artifacts
+          for target in "${targets[@]}"; do
+            name="$(basename "${target%.nim}")"
+            seed_corpus="fuzz/corpus/$name"
+            runtime_corpus="build/fuzz/corpus/$name"
+            artifact_dir="build/fuzz/artifacts/$name"
+
+            if [[ ! -d "$seed_corpus" ]]; then
+              echo "Missing seed corpus: $seed_corpus" >&2
+              exit 1
+            fi
+
+            mkdir -p "$runtime_corpus" "$artifact_dir"
+            cp -R "$seed_corpus"/. "$runtime_corpus"/
+            nim c --cc:clang --mm:orc --panics:on --noMain:on \
+              -d:noSignalHandler -d:useMalloc --debugger:native --path:src \
+              '--passC:-fsanitize=fuzzer,address,undefined' \
+              '--passL:-fsanitize=fuzzer,address,undefined' \
+              --out:"build/fuzz/bin/$name" "$target"
+
+            "build/fuzz/bin/$name" "$runtime_corpus" \
+              -runs=2500 -max_total_time="$FUZZ_SECONDS" \
+              -max_len=65536 -timeout=5 -rss_limit_mb=1024 \
+              -artifact_prefix="$artifact_dir/"
+          done
+
+      - name: Upload crash inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-findings-${{ github.run_id }}
+          path: build/fuzz/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

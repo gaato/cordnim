@@ -1,0 +1,13 @@
+version: 2
+
+updates:
+  # GitHub Actions are SHA-pinned in workflows. Dependabot keeps the digest and
+  # human-readable release comment in reviewable, narrowly scoped pull requests.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+      - ci
