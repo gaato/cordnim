@@ -1,54 +1,54 @@
 {
   "items": {
-    "chronos": {
+    "nim-chronos": {
       "dir": "$deps/chronos",
       "url": "https://github.com/status-im/nim-chronos",
       "commit": "45f43a9ad8bd8bcf5903b42f365c1c879bd54240",
       "version": ""
     },
-    "results": {
+    "nim-results": {
       "dir": "$deps/results",
       "url": "https://github.com/arnetheduck/nim-results",
       "commit": "df8113dda4c2d74d460a8fa98252b0b771bf1f27",
       "version": ""
     },
-    "bearssl": {
+    "nim-bearssl": {
       "dir": "$deps/bearssl",
       "url": "https://github.com/status-im/nim-bearssl",
       "commit": "7c307026d4d86dc560880c6fa716f5e626ff7fc2",
       "version": ""
     },
-    "websock": {
+    "nim-websock": {
       "dir": "$deps/websock",
       "url": "https://github.com/status-im/nim-websock",
       "commit": "387a8eb7e961e8fdd3b1a717d36bc53b55e4dc5d",
       "version": ""
     },
-    "chronicles": {
+    "nim-chronicles": {
       "dir": "$deps/chronicles",
       "url": "https://github.com/status-im/nim-chronicles",
       "commit": "27ec507429a4eb81edc20f28292ee8ec420be05b",
       "version": ""
     },
-    "zlib": {
+    "nim-zlib": {
       "dir": "$deps/zlib",
       "url": "https://github.com/status-im/nim-zlib",
       "commit": "190246aa0bb6569781370964fa2faa474203d6dd",
       "version": ""
     },
-    "stew": {
+    "nim-stew": {
       "dir": "$deps/stew",
       "url": "https://github.com/status-im/nim-stew",
       "commit": "4382b18f04b3c43c8409bfcd6b62063773b2bbaa",
       "version": ""
     },
-    "httputils": {
+    "nim-http-utils": {
       "dir": "$deps/httputils",
       "url": "https://github.com/status-im/nim-http-utils",
       "commit": "a9ca86095e262251d8ebafa1c6504fd476c41e43",
       "version": ""
     },
-    "unittest2": {
+    "nim-unittest2": {
       "dir": "$deps/unittest2",
       "url": "https://github.com/status-im/nim-unittest2",
       "commit": "26f2ef3ae0ec72a2a75bfe557e02e88f6a31c189",
@@ -60,25 +60,25 @@
       "commit": "b3dbc9c4d08e58c5b7bfad6dc7ef2ee52f2f4c08",
       "version": ""
     },
-    "faststreams": {
+    "nim-faststreams": {
       "dir": "$deps/faststreams",
       "url": "https://github.com/status-im/nim-faststreams",
       "commit": "50889cd16ec8771106cdd0eeea460039e8571e06",
       "version": ""
     },
-    "serialization": {
+    "nim-serialization": {
       "dir": "$deps/serialization",
       "url": "https://github.com/status-im/nim-serialization",
       "commit": "4092500cea76154576539371709ae801afbd2a9d",
       "version": ""
     },
-    "json_serialization": {
+    "nim-json-serialization": {
       "dir": "$deps/json_serialization",
       "url": "https://github.com/status-im/nim-json-serialization",
       "commit": "c343b0e243d9e17e2c40f3a8a24340f7c4a71d44",
       "version": ""
     },
-    "testutils": {
+    "nim-testutils": {
       "dir": "$deps/testutils",
       "url": "https://github.com/status-im/nim-testutils",
       "commit": "74588b8b55d116ca057431ae3a0ca359e0825fcd",
@@ -144,13 +144,16 @@
       "  \"src/cordnim/app/gateway_runtime.nim\",",
       "  \"src/cordnim/application_manifest.nim\",",
       "  \"src/cordnim/build_info.nim\",",
+      "  \"src/cordnim/bot.nim\",",
       "  \"src/cordnim/cache.nim\",",
       "  \"src/cordnim/cli.nim\",",
       "  \"src/cordnim/collectors.nim\",",
       "  \"src/cordnim/commands.nim\",",
       "  \"src/cordnim/components.nim\",",
       "  \"src/cordnim/core.nim\",",
+      "  \"src/cordnim/events.nim\",",
       "  \"src/cordnim/gateway.nim\",",
+      "  \"src/cordnim/gateway/chronos_runtime.nim\",",
       "  \"src/cordnim/interactions.nim\",",
       "  \"src/cordnim/models.nim\",",
       "  \"src/cordnim/observability.nim\",",

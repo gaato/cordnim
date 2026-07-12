@@ -8,9 +8,10 @@
 {.push warning[UnusedImport]: off.}
 
 import cordnim
-import cordnim/[api, app, application_manifest, build_info, cache, cli,
+import cordnim/[api, app, application_manifest, bot, build_info, cache, cli,
   collectors, command_policies, commands, components, core, events, gateway,
   interactions, models, observability, raw, rest, runtime, testing]
 import cordnim/app/[gateway_config, gateway_interactions, gateway_runtime]
+import cordnim/gateway/chronos_runtime
 
 {.pop.}
