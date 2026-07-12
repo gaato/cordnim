@@ -210,7 +210,7 @@ proc decodeMessageReference(node: JsonNode): MessageReference =
   result.guildId = optId(GuildId, obj, "guild_id",
     "message.message_reference")
 
-proc decodeMessageAuthor(node: JsonNode;
+proc decodeMessageAuthor*(node: JsonNode;
     webhookId: Option[WebhookId]): MessageAuthor =
   ## Decodes a message author into the branch selected by the message's
   ## `webhook_id`. A webhook-generated message carries only id, username, and
@@ -218,6 +218,10 @@ proc decodeMessageAuthor(node: JsonNode;
   ## keeps the `WebhookId`. Any other message is decoded strictly as a `User`.
   if webhookId.isSome:
     let obj = ensureObject(node, "message.author")
+    let authorId = decodeId(WebhookId,
+      requireField(obj, "id", "message.author"), "message.author.id")
+    if authorId != webhookId.get:
+      raiseDecode("message.author.id must match message.webhook_id")
     result = MessageAuthor(kind: makWebhook, webhookId: webhookId.get)
     result.username = asString(
       requireField(obj, "username", "message.author"),

@@ -7,6 +7,7 @@ import ./[
   dispatch,
   dispatch_runtime,
   entity_cache,
+  events,
   identify,
   intents,
   opcodes,
@@ -22,5 +23,5 @@ import ./[
 ]
 
 export close_policy, compression, coordination, dispatch, dispatch_runtime,
-  entity_cache, identify, intents, opcodes, payloads, runtime, session,
+  entity_cache, events, identify, intents, opcodes, payloads, runtime, session,
   shard_runner, sharding, supervisor, transport, url, websocket_chronos

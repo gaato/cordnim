@@ -167,6 +167,11 @@ block webhookAuthoredMessageDecodes:
   raw["author"]["username"] = %"tampered"
   doAssert message.rawJson["author"]["username"].getStr == "Captain Hook"
 
+  var mismatched = payload.copy()
+  mismatched["author"]["id"] = %"223704706495545345"
+  doAssertRaises DecodeError:
+    discard decodeMessage(mismatched)
+
 block embedTypeIsRequired:
   # MessageEmbedResponse marks `type` required and non-null on a received embed.
   var noType = completeMessage()
