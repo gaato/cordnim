@@ -1,41 +1,24 @@
 # cordnim
 
-cordnim is a typed Discord application runtime for Nim 2.2. It compiles command
-and form declarations, runs interactions over HTTP or Gateway ingress,
-schedules Discord REST requests, and supervises resumable Gateway shards with
-bounded dispatch and selective entity caching.
+cordnim is a Discord application library for Nim 2.2. It provides typed slash
+commands, components and modals, HTTP and Gateway interactions, rate-limited
+REST calls, and resumable Gateway shards.
 
-No release version has been assigned. The Nimble version is a packaging
-placeholder, and breaking API changes remain allowed while the design settles.
+cordnim is still in development. APIs may change before the first release.
 
-## Package map
+## Packages
 
 | Import | Purpose |
 | --- | --- |
-| `cordnim` | Application composition, typed IDs and secrets, commands, components, and HTTP interaction runtime |
-| `cordnim/api` | Typed REST operations with endpoint-owned auth, status, and retry contracts |
-| `cordnim/models` | Strict semantic Discord resources with retained unknown fields |
-| `cordnim/interactions` | Shared HTTP/Gateway dispatcher, response authority, verification, and persistent routes |
-| `cordnim/rest` | Chronos HTTP transport, dynamic rate-limit scheduler, replayable multipart requests, and checked errors |
-| `cordnim/gateway` | Gateway v10 transport, compression, session and shard runners, coordination, dispatch, and entity cache |
-| `cordnim/raw` | Generated Discord HTTP v10 models, route metadata, and the generic request escape hatch |
-| `cordnim/cache` | Policy-driven cache stores and cache/REST entity resolution |
-| `cordnim/observability` | Redacted logging and metric contracts |
-| `cordnim/testing` | Application test harness and deterministic fake clock |
+| `cordnim` | Build applications, commands, components, modals, and interaction handlers |
+| `cordnim/api` | Call Discord REST endpoints with typed request and response values |
+| `cordnim/models` | Decode Discord resources while retaining unknown fields |
+| `cordnim/gateway` | Run Gateway sessions, shards, event dispatch, and caching |
+| `cordnim/testing` | Test applications with scripted requests and a fake clock |
+| `cordnim/raw` | Access generated HTTP v10 routes when no high-level wrapper exists |
 
-Import the lower-level modules by name. Their wire types stay out of the main
-`cordnim` namespace.
-
-The Gateway runtime owns URL construction, zlib-stream decompression, HELLO and
-heartbeat processing, IDENTIFY or RESUME, reconnect policy, bounded event
-dispatch, and multi-shard supervision. Distributed coordination is an
-injectable lease and fencing contract; Cordnim ships a process-local adapter,
-not a production Redis or etcd backend.
-
-Voice media and high-level wrappers for the full raw HTTP route inventory remain
-outside the current scope. The separate `cordnim_voice` package contains Voice
-Gateway v8 and DAVE protocol state, but not UDP media transport, an Opus
-pipeline, jitter buffering, or mixing.
+Voice support lives in the separate `cordnim_voice` package. See the
+[architecture guide](docs/architecture.md) for the full module layout.
 
 ## Requirements
 
@@ -50,8 +33,9 @@ checkouts under `deps/`.
 
 ## Run an HTTP interaction app
 
-The example reads the Discord application public key from the environment,
-binds `/interactions` on port 8080, and lets the app own startup and shutdown.
+This example reads the Discord application public key from the environment and
+serves `/interactions` on port 8080. `app.run()` starts the attached services and
+shuts them down together.
 
 ```nim
 import std/os
@@ -94,31 +78,19 @@ Build the example with the libsodium adapter enabled:
 nim c -r --mm:orc -d:cordnimSodium bot.nim
 ```
 
-`newInteractionHttpRuntime` requires HTTP interaction ingress. A hybrid app can
-also enable Gateway event subscriptions and attach its Gateway runtime before
-calling `app.run`; `DiscordApp` starts attached components in order and closes
-them in reverse order.
-
-`ctx.reply` selects the initial response. The HTTP server commits that response
-after Chronos writes it to the client. Calls to `ctx.editOriginal` and
-`ctx.followup` wait for the delivery receipt, so webhook requests cannot pass
-the initial acknowledgement.
-
-Handlers may keep returning `CommandResult` for result-based dispatch. Once a
-handler selects a response through `CommandCtx`, the selected response owns the
-wire output and the returned result becomes diagnostic data for middleware.
+Use Gateway ingress for event subscriptions, or combine it with HTTP ingress in
+the same app. `ctx.reply` sends the initial interaction response;
+`ctx.editOriginal` and `ctx.followup` are available afterward. The
+[interactions guide](docs/interactions.md) covers routing, deferral, and response
+lifecycle in detail.
 
 ## Components and persistent routes
 
-Components V2 builders validate and serialize message trees. Modal forms
-return a validation result that can contain more than one problem. A
-`TypedRouteCodec[T]` signs versioned, expiring `custom_id` payloads, and
-`ComponentRouter` dispatches decoded actions after a restart.
-
-Applications provide signing-key storage and retain old verification keys for
-their planned route lifetime. Typed routes survive restart when the next process
-has the same keys and migration decoder. `Collector[T]` is available for
-bounded, short-lived in-process flows; it is not persistent route storage.
+Components V2 builders validate message trees before serialization. Modal forms
+report all validation problems at once. `TypedRouteCodec[T]` signs versioned,
+expiring `custom_id` payloads, so component routes can survive a restart when
+the next process has the same keys. Use `Collector[T]` for short-lived flows
+that do not need persistence.
 
 ## Operator CLI
 
@@ -135,7 +107,7 @@ cordnim commands sync --manifest manifest.json --application 123 --dry-run
 
 Command synchronization changes Discord state only when you pass both
 `--apply` and `--yes`. The CLI reads `DISCORD_BOT_TOKEN` or `DISCORD_TOKEN`
-from the environment or a literal `.env` assignment. It parses `.env` as text.
+from the environment or a literal `.env` assignment.
 
 ```fish
 cp .env.example .env
@@ -144,7 +116,7 @@ chmod 600 .env
 
 ## Development
 
-Replay the pinned dependency graph before building a fresh checkout:
+Restore the pinned dependencies before building a fresh checkout:
 
 ```fish
 atlas --noexec rep atlas.lock
