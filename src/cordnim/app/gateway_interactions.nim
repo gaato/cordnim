@@ -9,13 +9,14 @@ import std/[json, options]
 
 import chronos
 
+import cordnim/api/internal/execute
 import cordnim/core/[errors, ids, secrets]
 import cordnim/gateway/[dispatch_runtime, session]
 import cordnim/interactions/[dispatch_core, dispatcher, responder]
 import cordnim/raw/request as raw_request
 import cordnim/raw/route as raw_route
 import cordnim/raw/routes/interactions as interaction_routes
-import cordnim/rest/[checked, chronos_driver, raw_bridge, request]
+import cordnim/rest/[chronos_driver, request]
 
 type
   GatewayInteractionBridgeError* = object of DecodeError
@@ -77,7 +78,7 @@ proc sendInteractionCallback*(
     ],
     callback
   )
-  discard await client.submitChecked(raw.toRuntimeRequest(meta))
+  await client.executeNoContent(raw, meta, auth = darNone)
 
 proc gatewayInteractionHandler*[S](
     interactionDispatcher: InteractionDispatcher[S];

@@ -1,12 +1,14 @@
-import std/[json, options, strutils, unittest]
+import std/[json, jsonutils, options, strutils, unittest]
 
 import cordnim/rest
 
 proc request(path: string, priority: RequestPriority,
-             deadline = none(MonoMillis)): RawRequest =
+             deadline = none(MonoMillis),
+             authRequirement = darConfigured): RawRequest =
   RawRequest(
     route: routeKey(hmPost, path, "1"),
     urlPath: path,
+    authRequirement: authRequirement,
     meta: RequestMeta(
       deadline: deadline,
       priority: priority,
@@ -16,6 +18,22 @@ proc request(path: string, priority: RequestPriority,
   )
 
 suite "REST scheduler":
+  test "runtime request representations omit every secret-bearing field":
+    var cordRequest = request(
+      "/webhooks/runtime-path-token", rpNormal, authRequirement = darNone)
+    cordRequest.headers.add(
+      ("Authorization", "Bearer caller-authorization-token"))
+    cordRequest.body = jsonBody(%*{"token": "body-token"})
+    for rendered in [
+        $cordRequest,
+        repr(cordRequest),
+        $(%cordRequest),
+        $cordRequest.toJson(),
+    ]:
+      for secret in ["runtime-path-token", "caller-authorization-token",
+          "body-token"]:
+        check secret notin rendered
+
   test "audit reasons are bounded after URL encoding":
     check validateAuditReason("ordinary reason")
     check not validateAuditReason(repeat("あ", 100))
@@ -208,6 +226,109 @@ suite "REST scheduler":
     check waiting.kind == tkWait
     check waiting.wakeAt == MonoMillis(1_000)
 
+  test "public configured defaults share the public global limit":
+    var scheduler = initScheduler()
+    discard scheduler.enqueue(
+      request("/public-configured", rpNormal,
+        authRequirement = darConfigured),
+      MonoMillis(0), configuredIdentityIsPublic = true)
+    let configured = scheduler.takeReady(MonoMillis(0)).request
+    scheduler.complete(configured, RateLimitUpdate(
+      retryAfterMs: some(1_000'i64),
+      scope: rlsGlobal,
+      wasRateLimited: true
+    ), MonoMillis(0))
+
+    discard scheduler.enqueue(
+      request("/public-none", rpNormal, authRequirement = darNone),
+      MonoMillis(1), configuredIdentityIsPublic = true)
+    let publicWait = scheduler.takeReady(MonoMillis(1))
+    check publicWait.kind == tkWait
+    check publicWait.wakeAt == MonoMillis(1_000)
+
+    discard scheduler.enqueue(
+      request("/explicit-bot", rpNormal, authRequirement = darBot),
+      MonoMillis(1), configuredIdentityIsPublic = true)
+    let explicitBot = scheduler.takeReady(MonoMillis(1))
+    check explicitBot.kind == tkReady
+    check explicitBot.request.request.authRequirement == darBot
+    scheduler.complete(explicitBot.request, RateLimitUpdate(), MonoMillis(1))
+
+  test "configured requirements share a global limit but public stays free":
+    var scheduler = initScheduler()
+    discard scheduler.enqueue(
+      request("/configured", rpNormal,
+        authRequirement = darConfigured),
+      MonoMillis(0))
+    let configured = scheduler.takeReady(MonoMillis(0)).request
+    scheduler.complete(configured, RateLimitUpdate(
+      retryAfterMs: some(1_000'i64),
+      scope: rlsGlobal,
+      wasRateLimited: true
+    ), MonoMillis(0))
+
+    discard scheduler.enqueue(
+      request("/public", rpNormal, authRequirement = darNone),
+      MonoMillis(1))
+    let publicReady = scheduler.takeReady(MonoMillis(1))
+    check publicReady.kind == tkReady
+    check publicReady.request.request.authRequirement == darNone
+    scheduler.complete(publicReady.request, RateLimitUpdate(), MonoMillis(1))
+
+    discard scheduler.enqueue(
+      request("/explicit-bot", rpNormal, authRequirement = darBot),
+      MonoMillis(1))
+    let configuredWait = scheduler.takeReady(MonoMillis(1))
+    check configuredWait.kind == tkWait
+    check configuredWait.wakeAt == MonoMillis(1_000)
+
+  test "public configured defaults share learned buckets":
+    var scheduler = initScheduler()
+    discard scheduler.enqueue(
+      request("/same-public-route", rpNormal,
+        authRequirement = darConfigured),
+      MonoMillis(0), configuredIdentityIsPublic = true)
+    let configured = scheduler.takeReady(MonoMillis(0)).request
+    scheduler.complete(configured, RateLimitUpdate(
+      bucketId: some("same-public-bucket"),
+      remaining: some(0),
+      resetAfterMs: some(1_000'i64)
+    ), MonoMillis(0))
+
+    discard scheduler.enqueue(
+      request("/same-public-route", rpNormal, authRequirement = darNone),
+      MonoMillis(1), configuredIdentityIsPublic = true)
+    let waiting = scheduler.takeReady(MonoMillis(1))
+    check waiting.kind == tkWait
+    check waiting.wakeAt == MonoMillis(1_000)
+
+  test "configured learned buckets do not cross the public domain":
+    var scheduler = initScheduler()
+    discard scheduler.enqueue(
+      request("/same-route", rpNormal,
+        authRequirement = darConfigured),
+      MonoMillis(0))
+    let configured = scheduler.takeReady(MonoMillis(0)).request
+    scheduler.complete(configured, RateLimitUpdate(
+      bucketId: some("same-server-bucket"),
+      remaining: some(0),
+      resetAfterMs: some(1_000'i64)
+    ), MonoMillis(0))
+
+    discard scheduler.enqueue(
+      request("/same-route", rpNormal, authRequirement = darBot),
+      MonoMillis(1))
+    let configuredWait = scheduler.takeReady(MonoMillis(1))
+    check configuredWait.kind == tkWait
+    check configuredWait.wakeAt == MonoMillis(1_000)
+
+    discard scheduler.enqueue(
+      request("/same-route", rpNormal, authRequirement = darNone),
+      MonoMillis(1))
+    let publicReady = scheduler.takeReady(MonoMillis(1))
+    check publicReady.kind == tkReady
+    check publicReady.request.request.authRequirement == darNone
+
   test "expired and cancelled requests are discarded":
     var scheduler = initScheduler()
     var cancelled = request("/a", rpNormal)
@@ -331,6 +452,7 @@ suite "REST scheduler":
   test "retries retain cancellation membership until terminal settlement":
     var scheduler = initScheduler()
     var item = request("/retry-membership", rpNormal)
+    item.authRequirement = darOAuthBearer
     item.meta.cancellationId = some(99'u64)
     discard scheduler.enqueue(item, MonoMillis(0))
     let first = scheduler.takeReady(MonoMillis(0)).request
@@ -341,6 +463,7 @@ suite "REST scheduler":
     let second = scheduler.takeReady(MonoMillis(250))
     check second.kind == tkReady
     check second.request.id == first.id
+    check second.request.request.authRequirement == darOAuthBearer
     scheduler.complete(second.request, RateLimitUpdate(), MonoMillis(250))
     scheduler.settle(second.request)
     check scheduler.activeCancellationGroupCount == 0

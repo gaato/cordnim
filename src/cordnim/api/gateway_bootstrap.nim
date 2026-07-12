@@ -4,12 +4,13 @@ import std/[json, options]
 
 import chronos
 
+import cordnim/api/internal/execute
 import cordnim/core/errors
 import cordnim/gateway/[identify, sharding]
 import cordnim/raw/model as raw_model
 import cordnim/raw/request as raw_request
 import cordnim/raw/routes/gateway as gateway_routes
-import cordnim/rest/[checked, chronos_driver, raw_bridge, request]
+import cordnim/rest/[chronos_driver, request]
 
 type
   GatewayBotInfo* = object ## Current Gateway URL, shard advice, and IDENTIFY
@@ -107,11 +108,6 @@ proc decodeGatewayBotInfo*(encoded: string): GatewayBotInfo =
   except CatchableError:
     raise decodeFailure("Gateway bot response is not valid JSON")
 
-func responseText(body: openArray[byte]): string =
-  result = newString(body.len)
-  for index, value in body:
-    result[index] = char(value)
-
 proc getGatewayBot*(client: ChronosRestClient): Future[GatewayBotInfo] {.
     async.} =
   ## Fetches current shard advice and IDENTIFY limits through the REST scheduler.
@@ -120,8 +116,8 @@ proc getGatewayBot*(client: ChronosRestClient): Future[GatewayBotInfo] {.
   var meta = defaultRequestMeta()
   meta.idempotency = idSafe
   let raw = raw_request.initRawRequest(gateway_routes.getBotGateway)
-  let response = await client.submitChecked(raw.toRuntimeRequest(meta))
-  return decodeGatewayBotInfo(response.body.responseText())
+  return await client.executeJson(
+    raw, decodeGatewayBotInfo, meta, auth = darBot)
 
 proc planRecommendedShards*(info: GatewayBotInfo;
                             processIndex = 0'u16;

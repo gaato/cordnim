@@ -36,6 +36,13 @@ type
     idWithNonce, ## Discord can suppress duplicates through a nonce.
     idExplicit ## The caller explicitly permits repetition.
 
+  DiscordAuthRequirement* = enum ## Credential contract chosen by an operation.
+    darConfigured, ## Raw compatibility: use the transport credential, if any.
+    darNone, ## Never send an Authorization header for this request.
+    darBot, ## Require a bot-token transport.
+    darOAuthBearer, ## Require an OAuth2 bearer-token transport.
+    darBotOrOAuthBearer ## Accept either authenticated transport kind.
+
   RetryPolicy* = object ## Bounded exponential-backoff policy.
     maxAttempts*: int ## Total attempts, including the first request.
     baseDelayMs*: int64 ## Delay before the first retry.
@@ -83,6 +90,8 @@ type
     urlPath*: string ## Rendered API path; may contain a webhook token.
     headers*: seq[(string, string)] ## Non-authoritative request headers.
     body*: RestBody ## Replayable body representation for every attempt.
+    authRequirement*: DiscordAuthRequirement ## Operation-owned credential
+      ## requirement. It never contains credential bytes.
     meta*: RequestMeta ## Scheduling, retry, and cancellation policy.
 
 const
@@ -229,6 +238,7 @@ proc initRawRequest*(route: RouteKey, urlPath: string,
     urlPath: urlPath,
     headers: @headers,
     body: body,
+    authRequirement: darConfigured,
     meta: meta
   )
 
@@ -255,6 +265,23 @@ func canonical*(route: RouteKey): string =
   result = $route.httpMethod & " " & route.templatePath
   if route.majorParameter.len != 0:
     result.add(" #" & route.majorParameter)
+
+func `$`*(request: RawRequest): string =
+  ## Omits rendered paths, headers, bodies, and caller-defined route templates.
+  ## Raw escape hatches may place a credential in any of those fields.
+  $request.route.httpMethod & " [REST request]"
+
+func repr*(request: RawRequest): string =
+  ## Uses the same credential-free representation as `$`.
+  $request
+
+proc `%`*(request: RawRequest): JsonNode =
+  ## Serializes only the credential-free diagnostic representation.
+  newJString($request)
+
+proc toJsonHook*(request: RawRequest): JsonNode =
+  ## Keeps `std/jsonutils` from traversing rendered request fields.
+  %request
 
 func canRetry*(meta: RequestMeta): bool =
   ## Reports whether the caller supplied sufficient idempotency evidence.

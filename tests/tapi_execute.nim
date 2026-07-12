@@ -47,6 +47,18 @@ suite "semantic REST execution":
     check probe.requests.len == 1
     check probe.requests[0].route.canonical == "GET /semantic-test"
     check probe.requests[0].meta.idempotency == runtime_request.idSafe
+    check probe.requests[0].authRequirement == runtime_request.darConfigured
+    waitFor client.stop()
+
+  test "semantic operations carry operation-owned auth requirements":
+    let probe = RestProbe(response: TransportResponse(
+      status: 200, body: bytes("""{"name":"oauth"}""")))
+    let client = newChronosRestClient(probe.asTransport())
+    client.start()
+    let raw = raw_request.initRawRequest(raw_route.httpGet, "/oauth")
+    check (waitFor client.executeJson(
+      raw, decodeName, auth = runtime_request.darOAuthBearer)) == "oauth"
+    check probe.requests[0].authRequirement == runtime_request.darOAuthBearer
     waitFor client.stop()
 
   test "array decoding accepts null only when the caller opts in":
@@ -90,9 +102,63 @@ suite "semantic REST execution":
     let client = newChronosRestClient(probe.asTransport())
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpPost, "/maybe-created")
-    check (waitFor client.executeOptionalJson(raw, decodeName)).isNone
+    check (waitFor client.executeOptionalJson(raw, decodeName,
+      statuses = {SuccessStatus(204)})).isNone
     probe.response = TransportResponse(
       status: 201, body: bytes("""{"name":"created"}"""))
-    check (waitFor client.executeOptionalJson(raw, decodeName)) ==
+    check (waitFor client.executeOptionalJson(raw, decodeName,
+      statuses = {SuccessStatus(201)})) ==
       some("created")
+    waitFor client.stop()
+
+  test "optional JSON rejects bodies forbidden by 204 and 205":
+    let probe = RestProbe()
+    let client = newChronosRestClient(probe.asTransport())
+    client.start()
+    let raw = raw_request.initRawRequest(raw_route.httpPost, "/no-content")
+    for status in [204, 205]:
+      probe.response = TransportResponse(
+        status: status,
+        body: bytes("""{"name":"must-not-exist"}"""))
+      try:
+        discard waitFor client.executeOptionalJson(
+          raw, decodeName, statuses = {SuccessStatus(status)})
+        check false
+      except DecodeError as error:
+        check error.metadata.status == some(status)
+        check "must-not-exist" notin error.msg
+    waitFor client.stop()
+
+  test "semantic status contracts reject a different successful response":
+    let privateBody = "unexpected-status-private-body"
+    let probe = RestProbe(response: TransportResponse(
+      status: 201, body: bytes(privateBody)))
+    let client = newChronosRestClient(probe.asTransport())
+    client.start()
+    let raw = raw_request.initRawRequest(raw_route.httpPost, "/expects-200")
+    try:
+      discard waitFor client.executeJson(raw, decodeName)
+      check false
+    except DecodeError as error:
+      check error.metadata.status == some(201)
+      check error.metadata.route == some("POST /expects-200")
+      check privateBody notin error.msg
+    waitFor client.stop()
+
+  test "no-content contracts reject bodies forbidden by 204 and 205":
+    let privateBody = "unexpected-no-content-body"
+    let probe = RestProbe()
+    let client = newChronosRestClient(probe.asTransport())
+    client.start()
+    let raw = raw_request.initRawRequest(raw_route.httpDelete, "/expects-empty")
+    for status in [204, 205]:
+      probe.response = TransportResponse(
+        status: status, body: bytes(privateBody))
+      try:
+        waitFor client.executeNoContent(
+          raw, statuses = {SuccessStatus(status)})
+        check false
+      except DecodeError as error:
+        check error.metadata.status == some(status)
+        check privateBody notin error.msg
     waitFor client.stop()

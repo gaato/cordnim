@@ -7,6 +7,7 @@ const redactedSecret* = "[REDACTED]" ## Stable replacement used by safe
 
 type
   BotToken* = object ## Type marker for a Discord bot authorization token.
+  OAuthBearerToken* = object ## Type marker for an OAuth2 bearer access token.
   InteractionToken* = object ## Type marker for a short-lived interaction token.
   WebhookToken* = object ## Type marker for a webhook credential.
 

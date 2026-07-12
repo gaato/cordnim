@@ -34,11 +34,36 @@ type
   ResponseBodyLimitError* = object of CatchableError ## Raised before retaining
     ## more than the configured response body limit.
 
-  DiscordHttpTransport* = ref object ## Reusable Chronos HTTP session.
+  HttpCredentialKind = enum
+    hckNone
+    hckBot
+    hckOAuthBearer
+
+  HttpCredential = object
+    case kind: HttpCredentialKind
+    of hckNone:
+      discard
+    of hckBot:
+      botToken: Secret[BotToken]
+    of hckOAuthBearer:
+      bearerToken: Secret[OAuthBearerToken]
+
+  DiscordHttpTransport* = ref object ## Reusable single-credential HTTP session.
     session: HttpSessionRef
-    token: Option[Secret[BotToken]]
+    credential: HttpCredential
     baseUrl: string
     maxResponseBodyBytes: int
+
+func `$`*(transport: DiscordHttpTransport): string =
+  ## Renders transport state without traversing private credential storage.
+  if transport.isNil:
+    "DiscordHttpTransport(nil)"
+  else:
+    "DiscordHttpTransport(configured)"
+
+func repr*(transport: DiscordHttpTransport): string =
+  ## Uses the credential-free transport representation.
+  $transport
 
 func loopbackHost(hostname: string): bool =
   hostname.cmpIgnoreCase("localhost") == 0 or
@@ -93,6 +118,26 @@ func validHeaderValue(value: string): bool =
         (ordinal < 0x20 and character != '\t'):
       return false
   true
+
+proc validateCredential[Kind](token: Secret[Kind]; label: string) =
+  let value = token.reveal()
+  if value.len == 0:
+    raise newException(ValueError, label & " must not be empty")
+  if not value.validHeaderValue():
+    raise newException(ValueError, label & " must be HTTP header-safe")
+
+proc authorizationValue(credential: HttpCredential): string =
+  case credential.kind
+  of hckNone:
+    raise newException(ValueError,
+      "Discord REST authorization requires a configured credential")
+  of hckBot:
+    result = "Bot " & credential.botToken.reveal()
+  of hckOAuthBearer:
+    result = "Bearer " & credential.bearerToken.reveal()
+  if not result.validHeaderValue():
+    raise newException(ValueError,
+      "Discord REST credential is not HTTP header-safe")
 
 func headerValue(headers: openArray[(string, string)], name: string):
                  Option[string] =
@@ -362,15 +407,46 @@ proc execute(transport: DiscordHttpTransport,
   for (name, value) in cordRequest.headers:
     if not name.validHeaderName() or not value.validHeaderValue():
       raise newException(ValueError, "REST request header is not safe")
+    if name.cmpIgnoreCase("authorization") == 0:
+      raise newException(ValueError,
+        "Authorization header is owned by DiscordHttpTransport")
     if name.toLowerAscii() notin [
-        "authorization", "content-length", "content-type",
+        "content-length", "content-type",
         "transfer-encoding", "user-agent", "x-audit-log-reason"]:
       headers.add((name, value))
   # Authentication and audit metadata have one authoritative source. Accepting
   # caller-provided duplicates would make redaction and signature review
   # brittle.
-  if transport.token.isSome:
-    headers.add(("Authorization", "Bot " & transport.token.get().reveal()))
+  case cordRequest.authRequirement
+  of darNone:
+    discard
+  of darConfigured:
+    case transport.credential.kind
+    of hckNone:
+      discard
+    of hckBot:
+      headers.add(("Authorization", transport.credential.authorizationValue()))
+    of hckOAuthBearer:
+      headers.add(("Authorization", transport.credential.authorizationValue()))
+  of darBot:
+    if transport.credential.kind != hckBot:
+      raise newException(ValueError,
+        "Discord REST operation requires a bot credential")
+    headers.add(("Authorization", transport.credential.authorizationValue()))
+  of darOAuthBearer:
+    if transport.credential.kind != hckOAuthBearer:
+      raise newException(ValueError,
+        "Discord REST operation requires an OAuth bearer credential")
+    headers.add(("Authorization", transport.credential.authorizationValue()))
+  of darBotOrOAuthBearer:
+    case transport.credential.kind
+    of hckNone:
+      raise newException(ValueError,
+        "Discord REST operation requires an authenticated credential")
+    of hckBot:
+      headers.add(("Authorization", transport.credential.authorizationValue()))
+    of hckOAuthBearer:
+      headers.add(("Authorization", transport.credential.authorizationValue()))
   headers.add(("User-Agent", CordnimUserAgent))
   if cordRequest.meta.auditReason.isSome:
     let reason = cordRequest.meta.auditReason.get()
@@ -507,14 +583,49 @@ proc newDiscordHttpTransport*(token: Secret[BotToken],
                               maxResponseBodyBytes = 16 * 1_024 * 1_024):
                               DiscordHttpTransport =
   ## Creates a TLS-verifying, connection-reusing Discord transport.
-  if token.isEmpty:
-    raise newException(ValueError, "Discord bot token must not be empty")
+  token.validateCredential("Discord bot token")
   if maxResponseBodyBytes <= 0:
     raise newException(ValueError, "response body limit must be positive")
   let checkedUrl = baseUrl.checkedBaseUrl()
   DiscordHttpTransport(
     session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
-    token: some(token),
+    credential: HttpCredential(kind: hckBot, botToken: token),
+    baseUrl: checkedUrl,
+    maxResponseBodyBytes: maxResponseBodyBytes
+  )
+
+proc newDiscordOAuthHttpTransport*(token: Secret[OAuthBearerToken],
+                                   baseUrl = DiscordApiBaseUrl,
+                                   maxResponseBodyBytes =
+                                     16 * 1_024 * 1_024):
+                                   DiscordHttpTransport =
+  ## Creates a single-subject OAuth2 Bearer transport.
+  ##
+  ## A client and its scheduler must not mix credential identities because
+  ## Discord global rate-limit state belongs to that identity. Create a new
+  ## transport/client when the access token changes.
+  token.validateCredential("Discord OAuth bearer token")
+  if maxResponseBodyBytes <= 0:
+    raise newException(ValueError, "response body limit must be positive")
+  let checkedUrl = baseUrl.checkedBaseUrl()
+  DiscordHttpTransport(
+    session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
+    credential: HttpCredential(kind: hckOAuthBearer, bearerToken: token),
+    baseUrl: checkedUrl,
+    maxResponseBodyBytes: maxResponseBodyBytes
+  )
+
+proc newDiscordPublicHttpTransport*(baseUrl = DiscordApiBaseUrl,
+                                    maxResponseBodyBytes =
+                                      16 * 1_024 * 1_024):
+                                    DiscordHttpTransport =
+  ## Creates a transport that can call public or token-in-path operations only.
+  if maxResponseBodyBytes <= 0:
+    raise newException(ValueError, "response body limit must be positive")
+  let checkedUrl = baseUrl.checkedBaseUrl()
+  DiscordHttpTransport(
+    session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
+    credential: HttpCredential(kind: hckNone),
     baseUrl: checkedUrl,
     maxResponseBodyBytes: maxResponseBodyBytes
   )
@@ -526,21 +637,17 @@ proc newWebhookHttpTransport*(baseUrl = DiscordApiBaseUrl,
   ##
   ## No Authorization header is added. The same TLS verification and response
   ## limits as the bot transport remain active.
-  if maxResponseBodyBytes <= 0:
-    raise newException(ValueError, "response body limit must be positive")
-  let checkedUrl = baseUrl.checkedBaseUrl()
-  DiscordHttpTransport(
-    session: HttpSessionRef.new({HttpClientFlag.Http11Pipeline}),
-    token: none(Secret[BotToken]),
-    baseUrl: checkedUrl,
-    maxResponseBodyBytes: maxResponseBodyBytes
-  )
+  newDiscordPublicHttpTransport(baseUrl, maxResponseBodyBytes)
 
-proc asRestTransport*(transport: DiscordHttpTransport): RestTransport =
-  ## Erases the concrete session behind the scheduler transport callback.
-  result = proc(request: RawRequest): Future[TransportResponse]
+proc asRestTransport*(transport: DiscordHttpTransport): RestTransportBinding =
+  ## Erases the concrete session while retaining one byte-free identity fact.
+  let callback: RestTransport = proc(request: RawRequest):
+      Future[TransportResponse]
       {.gcsafe, raises: [].} =
     transport.executeClassified(request)
+  bindRestTransport(
+    callback,
+    configuredIdentityIsPublic = transport.credential.kind == hckNone)
 
 proc close*(transport: DiscordHttpTransport): Future[void] {.
             async: (raises: []).} =

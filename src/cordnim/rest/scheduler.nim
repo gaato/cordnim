@@ -13,6 +13,10 @@ const
     ## Maximum inactive bucket states retained for route reuse.
 
 type
+  RateLimitAuthDomain = enum
+    rladPublic
+    rladConfigured
+
   ScheduledRequestId* = distinct uint64 ## Process-local identity assigned when
     ## a request enters the scheduler.
 
@@ -34,6 +38,7 @@ type
     id*: ScheduledRequestId ## Stable identity across retries.
     request*: RawRequest ## Request body and execution policy.
     attempt*: int ## One-based transport attempt number.
+    authDomain: RateLimitAuthDomain
 
   QueueEntry = object
     request: ScheduledRequest
@@ -61,7 +66,7 @@ type
     buckets: Table[string, BucketState]
     cancellationGroups: Table[uint64, CancellationGroupState]
     cancellationMembers: Table[uint64, uint64]
-    globalResetAt: Option[MonoMillis]
+    globalResetAt: array[RateLimitAuthDomain, Option[MonoMillis]]
     rejections: seq[RejectedRequest]
 
   RejectionKind* = enum ## Reason a queued request was never dispatched.
@@ -107,12 +112,36 @@ func toUint64*(id: ScheduledRequestId): uint64 =
   ## Exposes an identity for diagnostics and deterministic tests.
   uint64(id)
 
-func provisionalBucket(route: RouteKey): string =
-  "route:" & route.canonical()
+func rateLimitAuthDomain(request: RawRequest,
+                         configuredIdentityIsPublic: bool):
+                         RateLimitAuthDomain =
+  if request.authRequirement == darNone or
+      (request.authRequirement == darConfigured and
+       configuredIdentityIsPublic):
+    rladPublic
+  else:
+    rladConfigured
 
-func bucketFor(scheduler: Scheduler, route: RouteKey): string =
-  let routeName = route.canonical()
-  scheduler.routeBuckets.getOrDefault(routeName, provisionalBucket(route))
+func domainKey(domain: RateLimitAuthDomain): string =
+  case domain
+  of rladPublic:
+    "public"
+  of rladConfigured:
+    "configured"
+
+func routeIdentity(request: RawRequest,
+                   authDomain: RateLimitAuthDomain): string =
+  authDomain.domainKey() & ":" & request.route.canonical()
+
+func provisionalBucket(request: RawRequest,
+                       authDomain: RateLimitAuthDomain): string =
+  "route:" & request.routeIdentity(authDomain)
+
+func bucketFor(scheduler: Scheduler, request: RawRequest,
+               authDomain: RateLimitAuthDomain): string =
+  let routeName = request.routeIdentity(authDomain)
+  scheduler.routeBuckets.getOrDefault(
+    routeName, provisionalBucket(request, authDomain))
 
 func isCancelled(scheduler: Scheduler, request: RawRequest): bool =
   if request.meta.cancellationId.isNone:
@@ -224,8 +253,12 @@ proc pruneIdleBuckets(scheduler: var Scheduler, now: MonoMillis) =
     scheduler.routeBuckets.del(routeName)
 
 proc enqueue*(scheduler: var Scheduler, request: sink RawRequest,
-              now: MonoMillis): ScheduledRequestId =
+              now: MonoMillis,
+              configuredIdentityIsPublic = false): ScheduledRequestId =
   ## Moves a request into its provisional or learned Discord bucket.
+  ##
+  ## `configuredIdentityIsPublic` resolves only `darConfigured`; explicit
+  ## operation requirements keep their own public or configured identity.
   let policyProblems = request.meta.retryPolicy.validate()
   if policyProblems.len != 0:
     raise newException(ValueError, policyProblems.join("; "))
@@ -234,11 +267,13 @@ proc enqueue*(scheduler: var Scheduler, request: sink RawRequest,
   inc scheduler.nextId
   let cancellationId = request.meta.cancellationId
   scheduler.registerCancellationMember(id, cancellationId)
-  let bucketName = scheduler.bucketFor(request.route)
+  let authDomain = request.rateLimitAuthDomain(configuredIdentityIsPublic)
+  let bucketName = scheduler.bucketFor(request, authDomain)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
   scheduler.touch(bucket)
   bucket.queue.add(QueueEntry(
-    request: ScheduledRequest(id: id, request: request, attempt: 1),
+    request: ScheduledRequest(
+      id: id, request: request, attempt: 1, authDomain: authDomain),
     sequence: scheduler.nextSequence,
     readyAt: now
   ))
@@ -296,63 +331,56 @@ proc takeReady*(scheduler: var Scheduler, now: MonoMillis): TakeResult =
   ## Calls must be followed by `complete` for every `tkReady` result so the
   ## reservation is released. Invalid queued requests are exposed separately
   ## through `takeRejections`.
-  var globalBlockedUntil = none(MonoMillis)
-  if scheduler.globalResetAt.isSome:
-    if scheduler.globalResetAt.get() > now:
-      globalBlockedUntil = scheduler.globalResetAt
-    else:
-      scheduler.globalResetAt = none(MonoMillis)
+  for domain in RateLimitAuthDomain:
+    if scheduler.globalResetAt[domain].isSome and
+        scheduler.globalResetAt[domain].get() <= now:
+      scheduler.globalResetAt[domain] = none(MonoMillis)
 
   var chosenBucket = ""
   var chosenEntry: QueueEntry
   var chosenIndex = -1
   var found = false
-  var hasQueued = false
   var earliest: Option[MonoMillis]
 
   for bucketName, storedBucket in scheduler.buckets.mpairs:
     storedBucket.refreshBucket(now)
     scheduler.discardInvalid(storedBucket, now)
-    if storedBucket.queue.len > 0:
-      hasQueued = true
     for entry in storedBucket.queue:
       let deadline = entry.request.request.meta.deadline
       if deadline.isSome and
           (earliest.isNone or deadline.get() < earliest.get()):
         earliest = deadline
 
-    if globalBlockedUntil.isNone and storedBucket.queue.len > 0 and
-        storedBucket.inFlight == 0:
+    if storedBucket.queue.len > 0 and storedBucket.inFlight == 0:
       # Each learned Discord bucket is serialized. Different buckets still run
       # concurrently in the Chronos driver, and this conservative rule avoids
       # racing multiple first requests before Discord reveals their limit.
-      var bucketFound = false
-      var bucketEntry: QueueEntry
-      var bucketIndex = -1
-      for index, entry in storedBucket.queue:
-        let ready = storedBucket.availableAt(entry, now)
-        if ready > now:
-          if earliest.isNone or ready < earliest.get():
-            earliest = some(ready)
-        elif not bucketFound or entry.dispatchCmp(bucketEntry) < 0:
-          bucketFound = true
-          bucketEntry = entry
-          bucketIndex = index
-      if bucketFound and
-          (not found or bucketEntry.dispatchCmp(chosenEntry) < 0):
-        found = true
-        chosenBucket = bucketName
-        chosenEntry = bucketEntry
-        chosenIndex = bucketIndex
+      let domain = storedBucket.queue[0].request.authDomain
+      let globalReset = scheduler.globalResetAt[domain]
+      if globalReset.isSome:
+        if earliest.isNone or globalReset.get() < earliest.get():
+          earliest = globalReset
+      else:
+        var bucketFound = false
+        var bucketEntry: QueueEntry
+        var bucketIndex = -1
+        for index, entry in storedBucket.queue:
+          let ready = storedBucket.availableAt(entry, now)
+          if ready > now:
+            if earliest.isNone or ready < earliest.get():
+              earliest = some(ready)
+          elif not bucketFound or entry.dispatchCmp(bucketEntry) < 0:
+            bucketFound = true
+            bucketEntry = entry
+            bucketIndex = index
+        if bucketFound and
+            (not found or bucketEntry.dispatchCmp(chosenEntry) < 0):
+          found = true
+          chosenBucket = bucketName
+          chosenEntry = bucketEntry
+          chosenIndex = bucketIndex
 
   scheduler.pruneIdleBuckets(now)
-
-  if globalBlockedUntil.isSome:
-    if not hasQueued:
-      return TakeResult(kind: tkIdle)
-    if earliest.isNone or globalBlockedUntil.get() < earliest.get():
-      earliest = globalBlockedUntil
-    return TakeResult(kind: tkWait, wakeAt: earliest.get())
 
   if not found:
     if earliest.isSome:
@@ -399,11 +427,12 @@ proc mergeBuckets(scheduler: var Scheduler, fromName, toName: string) =
 proc complete*(scheduler: var Scheduler, scheduled: ScheduledRequest,
                update: RateLimitUpdate, now: MonoMillis) =
   ## Releases a bucket reservation and applies response rate-limit facts.
-  let routeName = scheduled.request.route.canonical()
-  var bucketName = scheduler.bucketFor(scheduled.request.route)
+  let domain = scheduled.authDomain
+  let routeName = scheduled.request.routeIdentity(domain)
+  var bucketName = scheduler.bucketFor(scheduled.request, domain)
   if update.bucketId.isSome:
-    let learnedName = "discord:" & update.bucketId.get() & ":" &
-      scheduled.request.route.majorParameter
+    let learnedName = "discord:" & domain.domainKey() & ":" &
+      update.bucketId.get() & ":" & scheduled.request.route.majorParameter
     scheduler.mergeBuckets(bucketName, learnedName)
     scheduler.routeBuckets[routeName] = learnedName
     bucketName = learnedName
@@ -427,9 +456,9 @@ proc complete*(scheduler: var Scheduler, scheduled: ScheduledRequest,
   if update.wasRateLimited and update.retryAfterMs.isSome:
     let resetAt = now.saturatingAdd(update.retryAfterMs.get())
     if update.scope == rlsGlobal:
-      if scheduler.globalResetAt.isNone or
-          scheduler.globalResetAt.get() < resetAt:
-        scheduler.globalResetAt = some(resetAt)
+      if scheduler.globalResetAt[domain].isNone or
+          scheduler.globalResetAt[domain].get() < resetAt:
+        scheduler.globalResetAt[domain] = some(resetAt)
     else:
       bucket.remaining = some(0)
       if bucket.resetAt.isNone or bucket.resetAt.get() < resetAt:
@@ -447,7 +476,8 @@ proc retry*(scheduler: var Scheduler, scheduled: ScheduledRequest,
       not meta.canRetry or not scheduled.request.body.replayable() or
       scheduled.attempt >= meta.retryPolicy.maxAttempts:
     return false
-  let bucketName = scheduler.bucketFor(scheduled.request.route)
+  let bucketName = scheduler.bucketFor(
+    scheduled.request, scheduled.authDomain)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
   let nextAttempt = scheduled.attempt + 1
   let delay = meta.retryPolicy.retryDelayMs(nextAttempt)
@@ -456,7 +486,8 @@ proc retry*(scheduler: var Scheduler, scheduled: ScheduledRequest,
     request: ScheduledRequest(
       id: scheduled.id,
       request: scheduled.request,
-      attempt: nextAttempt
+      attempt: nextAttempt,
+      authDomain: scheduled.authDomain
     ),
     sequence: scheduler.nextSequence,
     readyAt: readyAt

@@ -4,6 +4,8 @@
 ## in independent buckets execute concurrently. Every spawned transport task is
 ## retained and cancelled or reaped during `stop`.
 
+{.experimental: "callOperator".}
+
 import std/[options, tables]
 
 import chronos
@@ -25,6 +27,12 @@ type
   RestTransport* = proc(request: RawRequest): Future[TransportResponse]
     {.gcsafe, raises: [].} ## Async HTTP adapter invoked after scheduling.
 
+  RestTransportBinding* = object ## Callable transport plus byte-free scheduler
+    ## identity metadata. The boolean says whether `darConfigured` emits no
+    ## credential and therefore shares the public/IP rate-limit identity.
+    callback: RestTransport
+    configuredIdentityIsPublic: bool
+
   ActiveTransport = object
     cancellationId: Option[uint64]
     future: Future[void]
@@ -33,6 +41,7 @@ type
   ChronosRestClient* = ref object ## Running central scheduler and task owner.
     scheduler: Scheduler
     transport: RestTransport
+    configuredIdentityIsPublic: bool
     wake: AsyncEvent
     pending: Table[ScheduledRequestId, Future[TransportResponse]]
     transportTasks: seq[ActiveTransport]
@@ -42,6 +51,43 @@ type
 proc monotonicMillis*(): MonoMillis =
   ## Converts the current Chronos monotonic clock to scheduler milliseconds.
   MonoMillis(Moment.now().epochNanoSeconds div 1_000_000)
+
+proc bindRestTransport*(transport: RestTransport,
+                        configuredIdentityIsPublic = false):
+                        RestTransportBinding =
+  ## Binds one opaque callback to its byte-free scheduler identity fact.
+  if transport.isNil:
+    raise newException(ValueError, "REST transport must not be nil")
+  RestTransportBinding(
+    callback: transport,
+    configuredIdentityIsPublic: configuredIdentityIsPublic)
+
+proc `()`*(binding: RestTransportBinding,
+           request: RawRequest): Future[TransportResponse] {.
+           gcsafe, raises: [].} =
+  ## Preserves direct callback-style invocation of a bound transport.
+  binding.callback(request)
+
+converter toRestTransport*(binding: RestTransportBinding): RestTransport =
+  ## Preserves APIs that explicitly accept the legacy callback type.
+  binding.callback
+
+func configuredIdentityIsPublic*(binding: RestTransportBinding): bool =
+  ## Reports only the scheduler identity fact; no credential bytes are exposed.
+  binding.configuredIdentityIsPublic
+
+func `$`*(binding: RestTransportBinding): string =
+  ## Omits the opaque callback and anything its environment retains.
+  if binding.callback.isNil:
+    "RestTransportBinding(nil)"
+  elif binding.configuredIdentityIsPublic:
+    "RestTransportBinding(public)"
+  else:
+    "RestTransportBinding(configured)"
+
+func repr*(binding: RestTransportBinding): string =
+  ## Uses the callback-free binding representation.
+  $binding
 
 func schedulerWaitChunkMs*(wakeAt, now: MonoMillis): int64 =
   ## Returns a Duration-safe, bounded wait chunk for one scheduler poll.
@@ -192,6 +238,11 @@ proc newChronosRestClient*(transport: RestTransport): ChronosRestClient =
     pending: initTable[ScheduledRequestId, Future[TransportResponse]]()
   )
 
+proc newChronosRestClient*(binding: RestTransportBinding): ChronosRestClient =
+  ## Creates a client that retains the transport's byte-free identity binding.
+  result = newChronosRestClient(binding.callback)
+  result.configuredIdentityIsPublic = binding.configuredIdentityIsPublic
+
 proc start*(client: ChronosRestClient) =
   ## Starts the single scheduler supervision task.
   if client.running:
@@ -205,7 +256,8 @@ proc submit*(client: ChronosRestClient,
   if not client.running:
     return failedResponse("REST client is not running")
   let promise = newFuture[TransportResponse]("cordnim.rest.submit")
-  let id = client.scheduler.enqueue(request, monotonicMillis())
+  let id = client.scheduler.enqueue(
+    request, monotonicMillis(), client.configuredIdentityIsPublic)
   client.pending[id] = promise
   client.wake.fire()
   promise

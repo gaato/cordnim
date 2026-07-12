@@ -1,7 +1,8 @@
 ## Scheduling controls shared by handwritten semantic REST operations.
 ##
 ## Callers choose deadlines, priority, retry bounds, audit context, and a
-## cancellation group. Each operation supplies its own idempotency evidence.
+## cancellation group. Each operation supplies its own idempotency evidence and
+## authentication requirement; neither can be overridden through this value.
 
 import std/[options, strutils]
 
@@ -20,7 +21,7 @@ func initApiCallOptions*(
     retryPolicy = defaultRetryPolicy();
     auditReason = none(string);
     cancellationId = none(uint64)): ApiCallOptions =
-  ## Creates scheduling options without exposing operation idempotency.
+  ## Creates scheduling options without exposing operation idempotency or auth.
   let problems = retryPolicy.validate()
   if problems.len != 0:
     raise newException(ValueError, problems.join("; "))

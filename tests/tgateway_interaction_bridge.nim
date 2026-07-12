@@ -6,7 +6,7 @@ import chronos
 
 import cordnim/[app, commands]
 import cordnim/app/gateway_interactions
-import cordnim/core/errors
+import cordnim/core/[errors, ids, secrets]
 import cordnim/gateway/[dispatch_runtime, session]
 import cordnim/interactions/dispatcher
 import cordnim/rest/[chronos_driver, request]
@@ -15,6 +15,7 @@ type
   BridgeServices = object
   RestRecorder = ref object
     requests: seq[RawRequest]
+    response: TransportResponse
 
 proc unused(ctx: CommandCtx[BridgeServices]): CommandResult {.
     discordCommand(name = "unused", description = "Unused test command").} =
@@ -31,11 +32,21 @@ func text(data: openArray[byte]): string =
   for index, value in data:
     result[index] = char(value)
 
+func bytes(value: string): seq[byte] =
+  result = newSeq[byte](value.len)
+  for index, item in value:
+    result[index] = byte(item)
+
 proc transport(recorder: RestRecorder): RestTransport =
   result = proc(cordRequest: RawRequest): Future[TransportResponse] {.
       closure, gcsafe, raises: [].} =
     recorder.requests.add(cordRequest)
-    completedResponse(TransportResponse(status: 204))
+    let response =
+      if recorder.response.status == 0:
+        TransportResponse(status: 204)
+      else:
+        recorder.response
+    completedResponse(response)
 
 suite "Gateway interaction bridge":
   test "routes the shared dispatcher through a token-safe callback request":
@@ -65,6 +76,7 @@ suite "Gateway interaction bridge":
     check cordRequest.route.majorParameter.len == 0
     check cordRequest.meta.priority == rpInteractionAck
     check cordRequest.meta.idempotency == idNever
+    check cordRequest.authRequirement == darNone
     check cordRequest.meta.deadline == some(receivedAt + 2_750'i64)
     check cordRequest.urlPath ==
       "/interactions/42/not-for-diagnostics/callback"
@@ -72,6 +84,24 @@ suite "Gateway interaction bridge":
 
     waitFor interactionDispatcher.close()
     waitFor client.stop()
+
+  test "requires exact empty 204 callback responses":
+    for response in [
+        TransportResponse(status: 200),
+        TransportResponse(status: 204, body: bytes("unexpected-body")),
+    ]:
+      let recorder = RestRecorder(response: response)
+      let client = newChronosRestClient(recorder.transport())
+      client.start()
+      try:
+        expect DecodeError:
+          waitFor client.sendInteractionCallback(
+            InteractionId.toId(42),
+            initSecret[InteractionToken]("interaction-token"),
+            %*{"type": 1},
+            monotonicMillis())
+      finally:
+        waitFor client.stop()
 
   test "delegates non-interaction events":
     let recorder = RestRecorder()

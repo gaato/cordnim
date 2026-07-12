@@ -5,6 +5,7 @@ import chronos/apps/http/httpserver
 import httputils
 
 import cordnim/core/errors as cordErrors
+import cordnim/core/secrets
 import cordnim/rest
 
 type
@@ -13,7 +14,9 @@ type
     contentTypes: seq[string]
     contentLengths: seq[string]
     transferEncodings: seq[string]
+    authorizations: seq[string]
     responseCodes: seq[HttpCode]
+    responseHeaders: seq[(string, string)]
     responseBody: seq[byte]
     bodyErrors: int
 
@@ -113,6 +116,7 @@ proc startCaptureServer(state: CaptureState): HttpServerRef =
     state.contentTypes.add request.headers.getString("Content-Type")
     state.contentLengths.add request.headers.getString("Content-Length")
     state.transferEncodings.add request.headers.getString("Transfer-Encoding")
+    state.authorizations.add request.headers.getString("Authorization")
     let body =
       try:
         await request.getBody()
@@ -131,8 +135,12 @@ proc startCaptureServer(state: CaptureState): HttpServerRef =
         state.responseCodes[index]
       else:
         Http200
+    var responseHeaders = HttpTable.init()
+    for (name, value) in state.responseHeaders:
+      responseHeaders.add(name, value)
     try:
-      return await request.respond(responseCode, state.responseBody)
+      return await request.respond(
+        responseCode, state.responseBody, responseHeaders)
     except HttpWriteError:
       return defaultResponse()
 
@@ -204,6 +212,23 @@ type
   HttpFailureOutcome = object
     failed: bool
     requests: int
+
+  AuthOutcome = object
+    authorizations: seq[string]
+    mismatchRejected: bool
+    callerHeaderRejected: bool
+    diagnosticsSafe: bool
+
+  CredentialInjectionOutcome = object
+    botRejected: bool
+    bearerRejected: bool
+    requests: int
+
+  AuthDomainOutcome = object
+    statuses: seq[int]
+    blocked: bool
+    requests: int
+    authorizations: seq[string]
 
 proc runRetryScenario(): Future[WireOutcome] {.async.} =
   var payload = newSeq[byte](2 * DefaultUploadChunkBytes + 17)
@@ -508,7 +533,206 @@ proc runCancellationScenario(): Future[FailureOutcome] {.async.} =
     await transport.close()
     await server.closeWait()
 
+proc runAuthenticationScenario(): Future[AuthOutcome] {.async.} =
+  let botSecret = "bot-auth-sentinel"
+  let bearerSecret = "bearer-auth-sentinel"
+  let callerSecret = "caller-auth-sentinel"
+  let capture = CaptureState(responseCodes: @[
+    Http200, Http200, Http200, Http200, Http200])
+  let server = startCaptureServer(capture)
+  let bot = newDiscordHttpTransport(
+    initSecret[BotToken](botSecret), server.baseUrl())
+  let bearer = newDiscordOAuthHttpTransport(
+    initSecret[OAuthBearerToken](bearerSecret), server.baseUrl())
+  let public = newDiscordPublicHttpTransport(server.baseUrl())
+
+  proc request(auth: DiscordAuthRequirement): RawRequest =
+    result = initRawRequest(routeKey(hmGet, "/auth"), "/auth")
+    result.authRequirement = auth
+
+  try:
+    discard await bot.asRestTransport()(request(darBot))
+    discard await bot.asRestTransport()(request(darNone))
+    discard await bearer.asRestTransport()(request(darOAuthBearer))
+    discard await bearer.asRestTransport()(request(darBotOrOAuthBearer))
+    discard await public.asRestTransport()(request(darNone))
+
+    try:
+      discard await bot.asRestTransport()(request(darOAuthBearer))
+    except cordErrors.ValidationError as error:
+      result.mismatchRejected = true
+      result.diagnosticsSafe = bearerSecret notin error.msg and
+        botSecret notin error.msg
+
+    var callerOwned = request(darConfigured)
+    callerOwned.headers.add(("Authorization", "Bearer " & callerSecret))
+    try:
+      discard await public.asRestTransport()(callerOwned)
+    except cordErrors.ValidationError as error:
+      result.callerHeaderRejected = true
+      result.diagnosticsSafe = result.diagnosticsSafe and
+        callerSecret notin error.msg
+    result.authorizations = capture.authorizations
+  finally:
+    await bot.close()
+    await bearer.close()
+    await public.close()
+    await server.closeWait()
+
+proc runCredentialInjectionScenario(): Future[CredentialInjectionOutcome] {.
+    async.} =
+  let capture = CaptureState()
+  let server = startCaptureServer(capture)
+  try:
+    var bot: DiscordHttpTransport
+    try:
+      bot = newDiscordHttpTransport(
+        initSecret[BotToken]("bot-token\r\nX-Injected: yes"),
+        server.baseUrl())
+    except ValueError as error:
+      result.botRejected = true
+      doAssert "bot-token" notin error.msg
+    if not bot.isNil:
+      await bot.close()
+
+    var bearer: DiscordHttpTransport
+    try:
+      bearer = newDiscordOAuthHttpTransport(
+        initSecret[OAuthBearerToken]("bearer-token\r\nX-Injected: yes"),
+        server.baseUrl())
+    except ValueError as error:
+      result.bearerRejected = true
+      doAssert "bearer-token" notin error.msg
+    if not bearer.isNil:
+      await bearer.close()
+    result.requests = capture.authorizations.len
+  finally:
+    await server.closeWait()
+
+func authDomainRequest(path: string, auth: DiscordAuthRequirement,
+                       deadline = none(MonoMillis)): RawRequest =
+  var meta = testMeta()
+  meta.deadline = deadline
+  result = initRawRequest(routeKey(hmGet, path), path, meta = meta)
+  result.authRequirement = auth
+
+proc runPublicAuthDomainScenario(): Future[AuthDomainOutcome] {.async.} =
+  let capture = CaptureState(
+    responseCodes: @[Http429],
+    responseHeaders: @[
+      ("Retry-After", "1"),
+      ("X-RateLimit-Global", "true"),
+    ])
+  let server = startCaptureServer(capture)
+  let transport = newDiscordPublicHttpTransport(server.baseUrl())
+  let binding = transport.asRestTransport()
+  doAssert binding.configuredIdentityIsPublic
+  doAssert "RestTransportBinding(public)" == $binding
+  let client = newChronosRestClient(binding)
+  client.start()
+  try:
+    let first = await client.submit(authDomainRequest(
+      "/public-configured", darConfigured))
+    result.statuses.add(first.status)
+
+    let deadline = monotonicMillis() + 100'i64
+    let pending = client.submit(authDomainRequest(
+      "/public-none", darNone, some(deadline)))
+    doAssert await pending.withTimeout(chronos.seconds(2))
+    try:
+      let response = await pending
+      result.statuses.add(response.status)
+    except cordErrors.RequestDeadlineError:
+      result.blocked = true
+    result.requests = capture.bodies.len
+    result.authorizations = capture.authorizations
+  finally:
+    await client.stop()
+    await transport.close()
+    await server.closeWait()
+
+proc runBotAuthDomainScenario(): Future[AuthDomainOutcome] {.async.} =
+  let capture = CaptureState(
+    responseCodes: @[Http429, Http429],
+    responseHeaders: @[
+      ("Retry-After", "1"),
+      ("X-RateLimit-Global", "true"),
+    ])
+  let server = startCaptureServer(capture)
+  let transport = newDiscordHttpTransport(
+    initSecret[BotToken]("domain-bot-token"), server.baseUrl())
+  let binding = transport.asRestTransport()
+  doAssert not binding.configuredIdentityIsPublic
+  doAssert "domain-bot-token" notin $binding
+  doAssert "domain-bot-token" notin repr(binding)
+  let client = newChronosRestClient(binding)
+  client.start()
+  try:
+    let configured = await client.submit(authDomainRequest(
+      "/bot-configured", darConfigured))
+    result.statuses.add(configured.status)
+
+    let public = await client.submit(authDomainRequest(
+      "/bot-public", darNone))
+    result.statuses.add(public.status)
+
+    let deadline = monotonicMillis() + 100'i64
+    let pending = client.submit(authDomainRequest(
+      "/bot-explicit", darBot, some(deadline)))
+    doAssert await pending.withTimeout(chronos.seconds(2))
+    try:
+      let response = await pending
+      result.statuses.add(response.status)
+    except cordErrors.RequestDeadlineError:
+      result.blocked = true
+    result.requests = capture.bodies.len
+    result.authorizations = capture.authorizations
+  finally:
+    await client.stop()
+    await transport.close()
+    await server.closeWait()
+
 suite "Discord HTTP transport":
+  test "public configured and explicit-none requests share one identity":
+    let outcome = waitFor runPublicAuthDomainScenario()
+    check outcome.statuses == @[429]
+    check outcome.blocked
+    check outcome.requests == 1
+    check outcome.authorizations == @[""]
+
+  test "bot configured requirements share while public stays independent":
+    let outcome = waitFor runBotAuthDomainScenario()
+    check outcome.statuses == @[429, 429]
+    check outcome.blocked
+    check outcome.requests == 2
+    check outcome.authorizations == @["Bot domain-bot-token", ""]
+
+  test "operation auth requirements select exactly one transport credential":
+    let outcome = waitFor runAuthenticationScenario()
+    check outcome.authorizations == @[
+      "Bot bot-auth-sentinel",
+      "",
+      "Bearer bearer-auth-sentinel",
+      "Bearer bearer-auth-sentinel",
+      "",
+    ]
+    check outcome.mismatchRejected
+    check outcome.callerHeaderRejected
+    check outcome.diagnosticsSafe
+
+  test "transport representations never traverse credentials":
+    let token = initSecret[OAuthBearerToken]("repr-auth-sentinel")
+    let transport = newDiscordOAuthHttpTransport(token)
+    check "repr-auth-sentinel" notin $transport
+    check "repr-auth-sentinel" notin repr(transport)
+    waitFor transport.close()
+
+  test "credential control bytes are rejected before loopback I/O":
+    let outcome = waitFor runCredentialInjectionScenario()
+    check outcome.botRejected
+    check outcome.bearerRejected
+    check outcome.requests == 0
+
   test "rate limit headers are learned dynamically":
     let update = parseRateLimitUpdate(429, [
       ("X-RateLimit-Bucket", "messages"),

@@ -4,6 +4,7 @@ import std/json
 
 import chronos
 
+import cordnim/api/internal/execute
 import cordnim/app/context as appcontext
 import cordnim/commands
 import cordnim/core/ids
@@ -113,11 +114,9 @@ proc interactionWebhookSender*(client: ChronosRestClient,
         ],
         response.messageBody()
       )
-      let submitted = await client.submit(
-        raw.toRuntimeRequest(response.action.requestMeta()))
-      if submitted.status < 200 or submitted.status >= 300:
-        raise newException(ValueError,
-          "Discord rejected interaction webhook response")
+      discard await client.executeDocument(
+        raw, response.action.requestMeta(), auth = darNone,
+        statuses = {SuccessStatus(200)})
     {.cast(gcsafe).}:
       return send()
 

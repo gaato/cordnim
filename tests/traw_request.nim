@@ -1,4 +1,4 @@
-import std/[assertions, json, strutils]
+import std/[assertions, json, jsonutils, strutils]
 
 import cordnim/raw/[request, route, routes]
 
@@ -23,6 +23,9 @@ block generated_route_request:
   doAssert "channels/42" notin $request
   doAssert "secret" notin $request
   doAssert "replacement" notin $request
+  for rendered in [repr(request), $(%request), $request.toJson()]:
+    doAssert "channels/42" notin rendered
+    doAssert "replacement" notin rendered
 
 block escape_hatch_for_new_stable_endpoint:
   let request = initRawRequest(
@@ -38,9 +41,11 @@ block escape_hatch_log_does_not_expose_path_tokens:
   let request = initRawRequest(
     httpPost,
     "/webhooks/1/interaction-token-value",
-    operationId = "future_webhook_operation"
+    operationId = "operation-token-value"
   )
-  doAssert "interaction-token-value" notin $request
+  for rendered in [$request, repr(request), $(%request), $request.toJson()]:
+    doAssert "interaction-token-value" notin rendered
+    doAssert "operation-token-value" notin rendered
 
 block escape_hatch_rejects_full_url:
   doAssertRaises RawRouteError:

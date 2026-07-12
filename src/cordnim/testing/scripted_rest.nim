@@ -25,6 +25,8 @@ import ./redaction
 type
   SanitizedRequest* = object ## Redacted snapshot of one observed REST request.
     httpMethod*: HttpMethod ## Method taken from the route key.
+    authRequirement*: DiscordAuthRequirement ## Credential contract without
+      ## credential bytes.
     routeCanonical*: string ## Token-free canonical route identity.
     redactedPath*: string ## Request path with embedded tokens removed.
     redactedHeaders*: seq[(string, string)] ## Caller headers after redaction.
@@ -37,6 +39,8 @@ type
   RestMatcher* = object ## Optional expectations checked against a request.
     ## Every field left at its default matches any request.
     httpMethod*: Option[HttpMethod] ## Required HTTP method.
+    authRequirement*: Option[DiscordAuthRequirement] ## Required credential
+      ## contract.
     templatePath*: Option[string] ## Required route template path.
     routeCanonical*: Option[string] ## Required canonical route identity.
     redactedRouteCanonical*: Option[string] ## Required canonical identity after
@@ -107,6 +111,7 @@ func copyResponse(response: TransportResponse): TransportResponse =
   result.body = response.body.copyBytes()
 
 func restMatcher*(httpMethod = none(HttpMethod),
+                  authRequirement = none(DiscordAuthRequirement),
                   templatePath = none(string),
                   routeCanonical = none(string),
                   redactedRouteCanonical = none(string),
@@ -122,6 +127,7 @@ func restMatcher*(httpMethod = none(HttpMethod),
   ## Builds a matcher; omitted fields accept any request.
   RestMatcher(
     httpMethod: httpMethod,
+    authRequirement: authRequirement,
     templatePath: templatePath,
     routeCanonical: routeCanonical,
     redactedRouteCanonical: redactedRouteCanonical,
@@ -205,6 +211,7 @@ func headersEqual(left, right: openArray[(string, string)]): bool =
 proc sanitize(transport: ScriptedRestTransport,
               request: RawRequest): SanitizedRequest =
   result.httpMethod = request.route.httpMethod
+  result.authRequirement = request.authRequirement
   result.routeCanonical = transport.redaction.redactRouteCanonical(
     request.route.canonical())
   result.redactedPath = transport.redaction.redactUrl(request.urlPath)
@@ -243,6 +250,9 @@ proc matchRequest(transport: ScriptedRestTransport, matcher: RestMatcher,
       matcher.httpMethod.get() != request.route.httpMethod:
     return "expected method " & $matcher.httpMethod.get() & ", got " &
       $request.route.httpMethod
+  if matcher.authRequirement.isSome and
+      matcher.authRequirement.get() != request.authRequirement:
+    return "request authentication requirement did not match"
   if matcher.templatePath.isSome and
       matcher.templatePath.get() != request.route.templatePath:
     return "expected template path " & matcher.templatePath.get() &

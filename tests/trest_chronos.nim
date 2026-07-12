@@ -50,6 +50,49 @@ suite "Chronos REST driver":
     check response.status == 200
     check response.body == @[byte 1, 2, 3]
 
+  test "transport bindings stay callable and raw callbacks stay supported":
+    let binding = bindRestTransport(
+      fakeTransport, configuredIdentityIsPublic = true)
+    check binding.configuredIdentityIsPublic
+    check $binding == "RestTransportBinding(public)"
+    let direct = waitFor binding(makeRequest("/binding-direct"))
+    check direct.status == 200
+    let erased: RestTransport = binding
+    let erasedResponse = waitFor erased(makeRequest("/binding-erased"))
+    check erasedResponse.status == 200
+
+    proc scenario(): Future[int] {.async.} =
+      let client = newChronosRestClient(fakeTransport)
+      client.start()
+      let response = await client.submit(makeRequest("/raw-callback"))
+      await client.stop()
+      return response.status
+    check (waitFor scenario()) == 200
+
+  test "identity resolution does not rewrite operation authentication":
+    type AuthState = ref object
+      observed: DiscordAuthRequirement
+
+    proc scenario(): Future[DiscordAuthRequirement] {.async.} =
+      let state = AuthState()
+      let transport: RestTransport = proc(
+          request: RawRequest): Future[TransportResponse]
+          {.gcsafe, raises: [].} =
+        state.observed = request.authRequirement
+        result = newFuture[TransportResponse]("test.rest.binding-auth")
+        result.complete(TransportResponse(status: 200))
+      let binding = bindRestTransport(
+        transport, configuredIdentityIsPublic = true)
+      let client = newChronosRestClient(binding)
+      client.start()
+      var request = makeRequest("/binding-auth")
+      request.authRequirement = darConfigured
+      discard await client.submit(request)
+      await client.stop()
+      return state.observed
+
+    check (waitFor scenario()) == darConfigured
+
   test "stopped clients fail instead of leaking a future":
     proc scenario(): Future[bool] {.async.} =
       let client = newChronosRestClient(fakeTransport)

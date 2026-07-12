@@ -70,6 +70,7 @@ suite "Gateway bootstrap API":
     check probe.requests.len == 1
     check probe.requests[0].route.canonical == "GET /gateway/bot"
     check probe.requests[0].meta.idempotency == idSafe
+    check probe.requests[0].authRequirement == darBot
     let plan = info.planRecommendedShards(processIndex = 1, processCount = 3)
     check plan.totalShards == 9
     check plan.owned.first == 3

@@ -19,6 +19,11 @@ block secretKindsAreDistinct:
     let webhook = initSecret[WebhookToken]("token")
     discard bot == webhook
   )
+  doAssert not compiles(block:
+    let bot = initSecret[BotToken]("token")
+    let bearer = initSecret[OAuthBearerToken]("token")
+    discard bot == bearer
+  )
 
 block failureMetadata:
   let interactionId = toId[InteractionKind](123'u64)

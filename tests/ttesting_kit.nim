@@ -249,6 +249,19 @@ block scripted_rest_happy_path_through_the_real_client:
   doAssert scripted.observedCount == 1
   scripted.assertSatisfied()
 
+block scripted_rest_matches_authentication_requirements:
+  let scripted = newScriptedRestTransport()
+  scripted.expectRequest(transportResponse(200), restMatcher(
+    authRequirement = some(darOAuthBearer)))
+  var request = getRequest("/oauth")
+  request.authRequirement = darBot
+  request.headers.add(("Authorization", "Bot scripted-auth-secret"))
+  let future = scripted.asRestTransport()(request)
+  doAssert future.failed
+  let diagnostic = scripted.recordedFailures().join(" ")
+  doAssert "authentication requirement" in diagnostic
+  doAssert "scripted-auth-secret" notin diagnostic
+
 block scripted_rest_reports_a_mismatch_diagnostic:
   let scripted = newScriptedRestTransport()
   scripted.expectRequest(transportResponse(204), matchMethod(hmPost))
@@ -305,6 +318,7 @@ block scripted_rest_observations_are_redacted_owned_snapshots:
   doAssert future.finished and not future.failed
   var observed = scripted.observedRequests()
   doAssert observed.len == 1
+  doAssert observed[0].authRequirement == darConfigured
   doAssert observed[0].bodyRedacted
   let body = observed[0].bodyBytes.bytesText()
   doAssert "body-secret" notin body
@@ -506,12 +520,13 @@ block scripted_gateway_pending_receive_is_reported_and_cancelled:
 
 block cassette_redacts_and_round_trips_rest_exchanges:
   var cassette = initCassette()
-  let request = initRawRequest(
+  var request = initRawRequest(
     routeKey(hmPost,
       "/webhooks/{webhook.id}/{webhook.token}/messages", "555"),
     "/webhooks/555/supersecret/messages",
     body = jsonBody(%*{"content": "hi", "token": "leak"}),
     headers = [("Authorization", "Bot secret-token")])
+  request.authRequirement = darOAuthBearer
   let response = jsonResponse(200, %*{"id": "1", "token": "leak"})
   cassette.recordRestExchange(request, response)
   let exported = cassette.toJson()
@@ -520,26 +535,46 @@ block cassette_redacts_and_round_trips_rest_exchanges:
   doAssert "leak" notin text
   doAssert "secret-token" notin text
   doAssert redactedSecret in text
+  doAssert exported["version"].getInt() == 3
+  doAssert exported["rest"][0]["request"]["auth_requirement"].getStr() ==
+    "darOAuthBearer"
   # JSON round-trips and never reconstructs the original secret.
   let reloaded = parseCassette(exported)
   doAssert reloaded.restExchanges.len == 1
+  doAssert reloaded.restExchanges[0].request.authRequirement == darOAuthBearer
   doAssert redactedSecret in $reloaded.toJson()
   # Replay yields the recorded (redacted) response through the real client.
   let scripted = reloaded.replayRestTransport()
   let client = newChronosRestClient(scripted.asRestTransport())
   client.start()
-  let replayRequest = initRawRequest(
+  var replayRequest = initRawRequest(
     routeKey(hmPost,
       "/webhooks/{webhook.id}/{webhook.token}/messages", "555"),
     "/webhooks/555/different-secret/messages",
     body = jsonBody(%*{"content": "hi", "token": "different-body-secret"}),
     headers = [("Authorization", "Bot different-header-secret")])
+  replayRequest.authRequirement = darOAuthBearer
   let replayed = waitFor client.submit(replayRequest)
   doAssert replayed.status == 200
   doAssert parseJson(replayed.body.bytesText())["token"].getStr() ==
     redactedSecret
   waitFor client.stop()
   scripted.assertSatisfied()
+
+block cassette_replay_rejects_a_different_auth_requirement:
+  var cassette = initCassette()
+  var recorded = getRequest("/oauth")
+  recorded.authRequirement = darOAuthBearer
+  cassette.recordRestExchange(recorded, transportResponse(200))
+  let scripted = cassette.replayRestTransport()
+  var different = getRequest("/oauth")
+  different.authRequirement = darBot
+  different.headers.add(("Authorization", "Bot replay-auth-secret"))
+  let future = scripted.asRestTransport()(different)
+  doAssert future.failed
+  let diagnostic = scripted.recordedFailures().join(" ")
+  doAssert "authentication requirement" in diagnostic
+  doAssert "replay-auth-secret" notin diagnostic
 
 block cassette_replay_rejects_a_different_rest_request:
   var cassette = initCassette()
@@ -688,6 +723,7 @@ block cassette_parsing_and_export_redact_untrusted_fields_again:
     ],
   }
   var cassette = parseCassette(untrusted)
+  doAssert cassette.restExchanges[0].request.authRequirement == darConfigured
   cassette.restExchanges[0].request.bodyText =
     "{\"token\":\"mutated-secret\"}"
   cassette.gatewayRecords[0].text =
@@ -699,6 +735,7 @@ block cassette_parsing_and_export_redact_untrusted_fields_again:
       "mutated-gateway-secret"]:
     doAssert secret notin exported
   doAssert redactedSecret in exported
+  doAssert "darConfigured" in exported
 
 block cassette_rejects_invalid_version_status_and_close_code:
   doAssertRaises ValueError:
@@ -717,6 +754,15 @@ block cassette_rejects_invalid_version_status_and_close_code:
       "version": 2,
       "gateway": [{"kind": "close", "code": 42, "reason": "",
         "clean": true}],
+    })
+  doAssertRaises ValueError:
+    discard parseCassette(%*{
+      "version": 3,
+      "rest": [{
+        "request": {"method": "GET", "route": "GET /x", "path": "/x",
+          "body_kind": "rbEmpty", "body_length": 0, "body": ""},
+        "response": {"status": 200, "body": ""},
+      }],
     })
 
 # --- Teardown aggregation ---------------------------------------------------

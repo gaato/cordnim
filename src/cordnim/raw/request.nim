@@ -87,6 +87,19 @@ proc setHeader*(request: var RawRequest, name, value: string) =
   request.headers.add(initRawNameValue(name, value))
 
 func `$`*(request: RawRequest): string =
-  ## Deliberately omits path values, query, headers, and body. Discord webhook
-  ## and interaction tokens can all appear outside an Authorization header.
-  $request.route.httpMethod & " [" & request.route.operationId & "]"
+  ## Deliberately omits all caller-controlled route and payload fields. Discord
+  ## webhook and interaction tokens can appear outside an Authorization header,
+  ## including in a raw escape hatch's operation identifier.
+  $request.route.httpMethod & " [raw request]"
+
+func repr*(request: RawRequest): string =
+  ## Uses the same credential-free representation as `$`.
+  $request
+
+proc `%`*(request: RawRequest): JsonNode =
+  ## Serializes only the credential-free diagnostic representation.
+  newJString($request)
+
+proc toJsonHook*(request: RawRequest): JsonNode =
+  ## Keeps `std/jsonutils` from traversing rendered request fields.
+  %request

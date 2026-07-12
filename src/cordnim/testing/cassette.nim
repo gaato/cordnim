@@ -17,12 +17,15 @@ import ./scripted_gateway
 import ./scripted_rest
 
 const
-  cassetteVersion = 2
+  cassetteVersion = 3
+  oldestCassetteVersion = 2
   multipartMarker = "[multipart]"
 
 type
   RecordedRequest* = object ## Redacted snapshot of a recorded REST request.
     httpMethod*: HttpMethod ## Method taken from the route key.
+    authRequirement*: DiscordAuthRequirement ## Credential contract without
+      ## credential bytes.
     routeCanonical*: string ## Token-free canonical route identity.
     redactedPath*: string ## Request path with embedded tokens removed.
     redactedHeaders*: seq[(string, string)] ## Headers after redaction.
@@ -94,6 +97,7 @@ proc sanitizeRouteCanonical(config: RedactionConfig, httpMethod: HttpMethod,
 
 proc recordRequest(cassette: Cassette, request: RawRequest): RecordedRequest =
   result.httpMethod = request.route.httpMethod
+  result.authRequirement = request.authRequirement
   result.routeCanonical = cassette.redaction.sanitizeRouteCanonical(
     request.route.httpMethod, request.route.canonical())
   result.redactedPath = cassette.redaction.redactUrl(request.urlPath)
@@ -208,6 +212,7 @@ proc toJson*(cassette: Cassette): JsonNode =
     result["rest"].add(%*{
       "request": {
         "method": $exchange.request.httpMethod,
+        "auth_requirement": $exchange.request.authRequirement,
         "route": requestRoute,
         "path": config.redactUrl(exchange.request.redactedPath),
         "headers": %config.safeHeaders(exchange.request.redactedHeaders),
@@ -266,12 +271,26 @@ func parseBodyKind(name: string): RestBodyKind =
     raise newException(ValueError,
       "unknown REST body kind in cassette: " & name)
 
+func parseAuthRequirement(name: string): DiscordAuthRequirement =
+  case name
+  of "darConfigured": darConfigured
+  of "darNone": darNone
+  of "darBot": darBot
+  of "darOAuthBearer": darOAuthBearer
+  of "darBotOrOAuthBearer": darBotOrOAuthBearer
+  else:
+    raise newException(ValueError,
+      "unknown REST authentication requirement in cassette: " & name)
+
 proc parseCassette*(node: JsonNode,
                     redaction = defaultRedaction()): Cassette =
   ## Parses untrusted cassette JSON and sanitizes every persisted text field.
   if node.isNil or node.kind != JObject:
     raise newException(ValueError, "cassette JSON must be an object")
-  if not node.hasKey("version") or node["version"].getInt() != cassetteVersion:
+  if not node.hasKey("version") or node["version"].kind != JInt:
+    raise newException(ValueError, "unsupported cassette version")
+  let version = node["version"].getInt()
+  if version < oldestCassetteVersion or version > cassetteVersion:
     raise newException(ValueError, "unsupported cassette version")
   result = initCassette(redaction)
   let config = result.redaction
@@ -284,6 +303,14 @@ proc parseCassette*(node: JsonNode,
         let response = exchange["response"]
         let httpMethod = parseMethod(request["method"].getStr())
         let bodyKind = parseBodyKind(request["body_kind"].getStr())
+        let authRequirement =
+          if request.hasKey("auth_requirement"):
+            parseAuthRequirement(request["auth_requirement"].getStr())
+          elif version == oldestCassetteVersion:
+            darConfigured
+          else:
+            raise newException(ValueError,
+              "cassette request authentication requirement is missing")
         var bodyLength = none(int64)
         if request.hasKey("body_length") and
             request["body_length"].kind != JNull:
@@ -299,6 +326,7 @@ proc parseCassette*(node: JsonNode,
         result.restExchanges.add(RestExchange(
           request: RecordedRequest(
             httpMethod: httpMethod,
+            authRequirement: authRequirement,
             routeCanonical: config.sanitizeRouteCanonical(
               httpMethod, request["route"].getStr()),
             redactedPath: config.redactUrl(request["path"].getStr()),
@@ -379,6 +407,7 @@ proc replayRestTransport*(cassette: Cassette): ScriptedRestTransport =
         discard
     let matcher = restMatcher(
       httpMethod = some(httpMethod),
+      authRequirement = some(exchange.request.authRequirement),
       redactedRouteCanonical = some(route),
       redactedUrlPath = some(path),
       bodyKind = some(exchange.request.bodyKind),

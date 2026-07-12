@@ -16,7 +16,8 @@ func runtimeMethod(httpMethod: raw_route.HttpMethod):
   of httpDelete: hmDelete
 
 func toRuntimeRequest*(raw: raw_request.RawRequest,
-                       meta = runtime_request.defaultRequestMeta()):
+                       meta = runtime_request.defaultRequestMeta(),
+                       authRequirement = runtime_request.darConfigured):
                        runtime_request.RawRequest =
   ## Converts a generated request without hiding or logging sensitive values.
   ##
@@ -27,6 +28,7 @@ func toRuntimeRequest*(raw: raw_request.RawRequest,
     route: runtime_request.routeKey(raw.route.httpMethod.runtimeMethod,
       raw.route.pathTemplate, raw.majorParameter),
     urlPath: raw.renderedPath(),
+    authRequirement: authRequirement,
     meta: meta
   )
   for header in raw.headers:
