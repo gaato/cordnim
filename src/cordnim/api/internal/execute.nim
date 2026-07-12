@@ -151,7 +151,7 @@ proc executeJsonArray*[T](client: ChronosRestClient;
     return @[]
   if document.kind != JArray:
     raise raw.decodeFailure("Discord REST response must be a JSON array")
-  for item in document:
+  for item in document.elems:
     try:
       result.add(decoder(item))
     except DecodeError:
