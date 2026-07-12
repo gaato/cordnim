@@ -435,7 +435,8 @@ proc handleDispatch(
   try:
     event = initDispatchEvent(
       eventName, runner.config.shardId, dispatch.sequence,
-      gatewayPartitionKey(eventName, dispatch.data), $dispatch.data)
+      gatewayPartitionKey(eventName, dispatch.data), $dispatch.data,
+      receivedAtMs = runner.clock())
   except ValueError:
     state.finish(ocResume)
     return false

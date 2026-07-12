@@ -117,6 +117,28 @@ func toLimbs*[Domain](bits: DiscordBits[Domain]): seq[uint64] =
   ## Returns a copy of the canonical little-endian limbs.
   bits.limbs
 
+func containsAll*[Domain](actual, required: DiscordBits[Domain]): bool =
+  ## Reports whether every bit in `required` is present in `actual`.
+  ##
+  ## This compares every arbitrary-width limb, so future Discord bits above 63
+  ## participate instead of being truncated to a machine integer.
+  for index, requiredLimb in required.limbs:
+    let actualLimb =
+      if index < actual.limbs.len: actual.limbs[index] else: 0'u64
+    if (actualLimb and requiredLimb) != requiredLimb:
+      return false
+  true
+
+func missingBits*[Domain](actual, required: DiscordBits[Domain]):
+    DiscordBits[Domain] =
+  ## Returns the required bits absent from `actual`.
+  result.limbs = newSeq[uint64](required.limbs.len)
+  for index, requiredLimb in required.limbs:
+    let actualLimb =
+      if index < actual.limbs.len: actual.limbs[index] else: 0'u64
+    result.limbs[index] = requiredLimb and not actualLimb
+  result.normalize()
+
 func containsBit*[Domain](bits: DiscordBits[Domain];
     position: Natural): bool =
   ## Tests an arbitrary bit position, including positions above 63.

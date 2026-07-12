@@ -152,6 +152,7 @@ proc closeFrame(code: uint16): GatewayTransportEvent =
 
 type Probe = ref object
   processed: seq[string]
+  receivedAtMs: seq[int64]
   reached: AsyncEvent
   target: int
   gate: AsyncEvent
@@ -164,6 +165,7 @@ proc handler(probe: Probe): GatewayDispatchHandler =
     if probe.gated:
       await probe.gate.wait()
     probe.processed.add event.name
+    probe.receivedAtMs.add event.receivedAtMs
     if probe.target > 0 and probe.processed.len >= probe.target:
       probe.reached.fire()
 
@@ -279,9 +281,11 @@ block identify_ready_checkpoint_and_autostart:
   doAssert h.runner.lifecycle == shardIdentifying
   # READY must be dispatch-admitted (proving the dispatch runtime auto-started),
   # then its session/sequence adopted and checkpointed.
+  h.tl.advance(123)
   h.driver.push(readyEvent(10, "sess-a", "wss://resume.example/"))
   waitFor h.probe.reached.wait()
   doAssert h.probe.processed == @["READY"]
+  doAssert h.probe.receivedAtMs == @[123'i64]
   doAssert h.runner.lifecycle == shardReady
   let snap = h.runner.sessionSnapshot
   doAssert snap.canResume

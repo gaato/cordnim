@@ -4,6 +4,12 @@ import std/atomics
 
 import cordnim/rest/request
 
+const
+  DefaultInteractionAckWindowMs* = 3_000'i64
+    ## Default time available for an initial interaction response.
+  DefaultInteractionTokenLifetimeMs* = 15 * 60 * 1_000'i64
+    ## Default lifetime of interaction-token follow-up operations.
+
 type
   InteractionResponseState* = enum ## Atomic initial-response lifecycle.
     irFresh, ## No initial response has been claimed.
@@ -125,8 +131,9 @@ func validatePolicy*(kind: InteractionType,
       irePolicyUnsupported
 
 proc newInteractionResponder*(receivedAt: MonoMillis,
-                              ackWindowMs = 3_000'i64,
-                              tokenLifetimeMs = 15 * 60 * 1_000'i64):
+                              ackWindowMs = DefaultInteractionAckWindowMs,
+                              tokenLifetimeMs =
+                                DefaultInteractionTokenLifetimeMs):
                               InteractionResponder =
   ## Creates fresh atomic response authority with monotonic deadlines.
   new result

@@ -41,6 +41,9 @@ type
     sequence*: GatewaySequence ## Dispatch sequence for resume accounting.
     partitionKey*: uint64 ## Ordering key (for example a guild id) consulted only
       ## by the partitioned policy; ignored by ordered and concurrent policies.
+    receivedAtMs*: int64 ## Monotonic milliseconds captured by the Gateway
+      ## reader before queue admission. Interaction handlers use this original
+      ## ingress instant so queue delay cannot extend Discord's ACK window.
     payload*: string ## Raw event data for the handler. Deliberately excluded
       ## from `DispatchErrorContext` so handler-owned content cannot leak.
 
@@ -93,6 +96,7 @@ func initDispatchEvent*(
     sequence: GatewaySequence;
     partitionKey: uint64 = 0'u64;
     payload: sink string = "",
+    receivedAtMs: int64 = 0'i64,
 ): DispatchEvent {.raises: [ValueError].} =
   ## Creates one dispatch event, validating the name once at the input boundary.
   ##
@@ -100,11 +104,15 @@ func initDispatchEvent*(
   ## attribute it to a source.
   if name.len == 0:
     raise newException(ValueError, "dispatch event name must not be empty")
+  if receivedAtMs < 0:
+    raise newException(ValueError,
+      "dispatch event receive time must not be negative")
   DispatchEvent(
     shardId: shardId,
     name: name,
     sequence: sequence,
     partitionKey: partitionKey,
+    receivedAtMs: receivedAtMs,
     payload: payload,
   )
 

@@ -10,35 +10,14 @@ import chronos
 import cordnim/commands
 import cordnim/commands/spec as commandspec
 import cordnim/app/context as appcontext
+import cordnim/gateway/intents
+
+export intents
 
 type
   InteractionIngress* = enum ## Exclusive source of Discord interactions.
     ingressHttp, ## Verify and receive interactions over HTTP webhooks.
     ingressGateway ## Receive interactions from the Gateway connection.
-
-  GatewayIntent* = enum ## Gateway intent groups available to event
-                        ## subscriptions.
-    giGuilds, ## Guild lifecycle and channel events.
-    giGuildMembers, ## Guild member events; privileged when applicable.
-    giGuildModeration, ## Bans and moderation-related guild events.
-    giGuildExpressions, ## Emoji, sticker, and soundboard expression events.
-    giGuildIntegrations, ## Guild integration events.
-    giGuildWebhooks, ## Webhook update events.
-    giGuildInvites, ## Invite lifecycle events.
-    giGuildVoiceStates, ## Voice-state events required for voice connections.
-    giGuildPresences, ## Presence events; privileged when applicable.
-    giGuildMessages, ## Messages created in guild channels.
-    giGuildMessageReactions, ## Reactions in guild channels.
-    giGuildMessageTyping, ## Typing events in guild channels.
-    giDirectMessages, ## Messages created in direct messages.
-    giDirectMessageReactions, ## Reactions in direct messages.
-    giDirectMessageTyping, ## Typing events in direct messages.
-    giMessageContent, ## Message content fields; privileged when applicable.
-    giGuildScheduledEvents, ## Scheduled-event lifecycle events.
-    giAutoModerationConfig, ## Auto Moderation rule configuration events.
-    giAutoModerationExecution, ## Auto Moderation action execution events.
-    giGuildMessagePolls, ## Poll vote events in guild channels.
-    giDirectMessagePolls ## Poll vote events in direct messages.
 
   GatewaySubscriptions* = object ## Optional non-interaction Gateway event feed.
     gatewayEnabled: bool
@@ -154,6 +133,13 @@ func interactionIngress*(config: AppConfig): InteractionIngress =
 func gatewayEvents*(config: AppConfig): GatewaySubscriptions =
   ## Returns independent non-interaction Gateway event subscriptions.
   config.gatewaySubscriptionsValue
+
+func gatewayIntentMask*(config: AppConfig): uint64 {.raises: [].} =
+  ## Returns the IDENTIFY intent mask required by this application.
+  ##
+  ## Gateway interaction ingress itself has no intent bit. Only explicitly
+  ## subscribed non-interaction event groups contribute to this mask.
+  config.gatewaySubscriptionsValue.gatewayIntents.toMask
 
 func appMode*(config: AppConfig): AppMode =
   ## Derives the operational mode without conflating events and interactions.
