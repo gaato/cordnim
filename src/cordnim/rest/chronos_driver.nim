@@ -258,3 +258,7 @@ func inFlightCount*(client: ChronosRestClient): int =
 func activeCancellationGroupCount*(client: ChronosRestClient): int =
   ## Returns live cancellation groups retained by the running scheduler.
   client.scheduler.activeCancellationGroupCount
+
+func isRunning*(client: ChronosRestClient): bool =
+  ## Reports whether the scheduler worker is currently owned and running.
+  not client.isNil and client.running
