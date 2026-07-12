@@ -154,6 +154,28 @@ jobs:
           python3 tools/check_doc_links.py htmldocs
           python3 tools/check_doc_links.py voice/htmldocs
 
+      # Keep the generated core layout intact and mount Voice below /voice/.
+      # Pages serves index.html, while Nim's generated theindex.html remains
+      # available at its original URL.
+      - name: Stage GitHub Pages site
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/pages/voice
+          cp -R htmldocs/. build/pages/
+          cp -R voice/htmldocs/. build/pages/voice/
+          cp build/pages/theindex.html build/pages/index.html
+          cp build/pages/voice/theindex.html build/pages/voice/index.html
+          touch build/pages/.nojekyll
+          python3 tools/check_doc_links.py build/pages
+
+      - name: Upload GitHub Pages artifact
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: build/pages
+
       - name: Upload API documentation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -163,6 +185,25 @@ jobs:
             voice/htmldocs/
           if-no-files-found: error
           retention-days: 7
+
+  pages:
+    name: Publish API documentation
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: [tier1, schema, docs]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      # Enable Settings > Pages > Source: GitHub Actions before the first run.
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
   devel:
     name: Nim devel (advisory)
