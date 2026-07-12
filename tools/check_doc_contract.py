@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import re
 import shutil
+from html.parser import HTMLParser
 from pathlib import Path
 
 
@@ -15,6 +16,55 @@ ENTRY_BLOCK = re.compile(
 )
 QUOTED_PATH = re.compile(r'"(src/[^"\n]+\.nim)"')
 DOC_ASSETS = ("theindex.html", "nimdoc.out.css", "dochack.js")
+CORE_CONTENT = {
+    Path("cordnim.html"): (
+        "Cordnim 0.1.0 is a preview",
+        "cordnim/bot",
+        "hybrid application",
+        "cordnim/testing",
+    ),
+    Path("cordnim/bot.html"): (
+        "singleProcessGateway",
+        "onReady",
+        "app.run()",
+        "bot.interactions",
+    ),
+    Path("cordnim/api.html"): (
+        "ChronosRestClient",
+        "bot.rest",
+        "ApiCallOptions",
+        "cordnim/raw",
+        "fetchCurrentApplication",
+    ),
+    Path("cordnim/interactions.html"): (
+        "runtime.dispatcher",
+        "bot.interactions",
+        "component, modal, and autocomplete handlers",
+        "CommandSet",
+    ),
+    Path("cordnim/doc_index.html"): (
+        "Complete generated reference",
+        "Cordnim 0.1.0 is a preview",
+    ),
+    Path("theindex.html"): (
+        "cordnim/bot",
+        "cordnim/api",
+        "cordnim/interactions",
+    ),
+}
+
+
+class TextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.parts.append(data)
+
+    def text(self) -> str:
+        text = " ".join(" ".join(self.parts).split())
+        return re.sub(r"\s*([./()\[\]])\s*", r"\1", text)
 
 
 def public_entries(manifest: Path) -> list[Path]:
@@ -35,6 +85,12 @@ def public_entries(manifest: Path) -> list[Path]:
 def output_page(entry: Path) -> Path:
     relative = entry.relative_to("src")
     return relative.with_suffix(".html")
+
+
+def rendered_text(page: Path) -> str:
+    parser = TextParser()
+    parser.feed(page.read_text(encoding="utf-8"))
+    return parser.text()
 
 
 def clean(root: Path) -> None:
@@ -67,6 +123,21 @@ def check(root: Path, manifest: Path, doc_index_page: Path) -> list[str]:
         asset = root / name
         if not asset.is_file() or asset.stat().st_size == 0:
             failures.append(f"missing generated documentation asset: {asset}")
+    if manifest.resolve() == (PROJECT_ROOT / "cordnim.nimble").resolve():
+        for relative, required in CORE_CONTENT.items():
+            page = root / relative
+            if not page.is_file():
+                continue
+            try:
+                text = rendered_text(page)
+            except (OSError, UnicodeError) as error:
+                failures.append(f"cannot inspect generated documentation: {page}: {error}")
+                continue
+            for phrase in required:
+                if phrase not in text:
+                    failures.append(
+                        f"generated documentation lacks {phrase!r}: {page}"
+                    )
     return failures
 
 

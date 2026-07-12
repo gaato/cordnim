@@ -1,9 +1,13 @@
-## Documentation-only root for Cordnim's public modules.
+## Complete generated reference for Cordnim's public modules.
 ##
-## `nimble docs` runs `nim doc --project` once from this module. It is not a
-## runtime facade; application code should import `cordnim`, `cordnim/api`,
-## `cordnim/models`, or one of the lower-level umbrellas described in the
-## package guide.
+## `nimble docs` uses this module to include every documented surface in one
+## searchable Nimdoc index. Application code starts with `cordnim` for HTTP
+## interactions or adds `cordnim/bot` for a complete Gateway bot. Semantic REST
+## operations live in `cordnim/api`; resource values and deterministic test
+## support live in `cordnim/models` and `cordnim/testing`.
+##
+## Cordnim 0.1.0 is a preview. Public APIs may change before a stable release.
+## This module exists for documentation generation and is not a runtime facade.
 
 {.push warning[UnusedImport]: off.}
 

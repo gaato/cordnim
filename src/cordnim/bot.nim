@@ -8,6 +8,39 @@
 ## Single-process coordination is an explicit constructor argument. A deployment
 ## with more than one process must supply a distributed `GatewayCoordination`;
 ## Cordnim never silently promotes the in-memory adapter across hosts.
+##
+## Gateway interaction ingress exposes commands, components, modals, and
+## autocomplete through `bot.interactions`. A hybrid application receives those
+## interactions through its `InteractionHttpRuntime` dispatcher instead.
+## `bot.rest` is running while application handlers run and closes with the app.
+
+runnableExamples:
+  import chronos
+  import cordnim
+
+  type ExampleServices = object
+    environment: string
+
+  let app = newDiscordApp(
+    ExampleServices(environment: "example"),
+    initAppConfig(ingressGateway),
+    initCommandSet[ExampleServices](),
+  )
+  let gateway = newGatewayBotRuntime(
+    app,
+    initSecret[BotToken]("example-token"),
+    singleProcessGateway(),
+  )
+
+  gateway.events.onReady proc(
+      context: GatewayEventContext[ExampleServices]; event: ReadyEvent
+  ): Future[void] {.async.} =
+    doAssert event.version == 10
+    echo context.services.environment
+
+  doAssert app.lifecycleState == alsReady
+  if false:
+    waitFor app.run()
 
 import std/options
 

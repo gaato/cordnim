@@ -154,11 +154,12 @@ jobs:
           python3 tools/check_doc_links.py htmldocs
           python3 tools/check_doc_links.py voice/htmldocs
 
-      # Publish a human guide at the root and keep complete Nimdoc under /api/.
+      # Publish Core Nimdoc at the root and optional Voice Nimdoc under /voice/.
       - name: Stage GitHub Pages site
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         run: |
           python3 tools/build_pages.py
+          python3 tools/check_pages_contract.py build/pages
           python3 tools/check_doc_links.py build/pages
 
       - name: Upload GitHub Pages artifact
