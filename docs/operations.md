@@ -6,9 +6,8 @@ the application close those components in reverse attachment order.
 
 ## Build identity
 
-The Nimble package version is a packaging placeholder until a release version is
-assigned. Runtime diagnostics use `CordnimBuildLabel`, whose default value is
-`development`.
+The Nimble package version and default `CordnimBuildLabel` are `0.1.0`.
+Releases in the 0.1 series may change public APIs between versions.
 
 Set a deployment label at compile time:
 
@@ -151,6 +150,6 @@ Protocol and ownership-sensitive focused tests should also pass with release
 checks and danger optimizations. Keep their compiler caches and executables in a
 build directory on persistent storage rather than a small tmpfs.
 
-Release tooling must assign the public version and build label deliberately.
-The current packaging placeholder must not be published as if it were a settled
-compatibility version.
+Release tooling must update the package version and default build label
+together. A 0.1.x version identifies a release; it does not promise API
+compatibility.

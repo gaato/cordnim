@@ -1,5 +1,4 @@
-# Packaging placeholder. The public release version is not assigned yet.
-version = "0.0.0"
+version = "0.1.0"
 author = "Gakuto Furuya"
 description = "Optional Discord Voice Gateway v8 and DAVE support for cordnim"
 license = "MPL-2.0"

@@ -90,10 +90,10 @@ the supervised REST client.
 the specification commit, schema digest, and overlay revision identify the
 pinned wire snapshot.
 
-`CordnimBuildLabel` identifies the library build. The development build label
-does not assign a release version, and it does not replace the schema revision.
-Record both identities when an application persists raw payloads or reports a
-compatibility problem.
+`CordnimBuildLabel` identifies the library build and defaults to the package
+version. Deployments may override it with a more specific build identifier. It
+does not replace the schema revision. Record both identities when an application
+persists raw payloads or reports a compatibility problem.
 
 The generated module docs form the field-level reference. Discord's
 [API Reference](https://docs.discord.com/developers/reference) remains the

@@ -207,9 +207,9 @@ scheduler.
 
 ## Compatibility identity
 
-The public release version has not been assigned. `CordnimBuildLabel` identifies
-a concrete build for diagnostics without turning the Nimble packaging
-placeholder into an API promise.
+The package version is `0.1.0`. Releases in the 0.1 series may change public
+APIs between versions. `CordnimBuildLabel` identifies a concrete build for
+diagnostics and remains separate from the Discord schema identity.
 
 Generated raw declarations carry `discordSchemaRevision`, the source commit,
 schema digest, and overlay revision. Applications that persist raw payloads

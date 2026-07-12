@@ -4,7 +4,7 @@ cordnim is a Discord application library for Nim 2.2. It provides typed slash
 commands, components and modals, HTTP and Gateway interactions, rate-limited
 REST calls, and resumable Gateway shards.
 
-cordnim is still in development. APIs may change before the first release.
+cordnim 0.1.0 is a preview release. Public APIs may change between releases.
 
 ## Packages
 

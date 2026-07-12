@@ -1,5 +1,4 @@
-# Packaging placeholder. A public release version has not been assigned.
-version       = "0.0.0"
+version       = "0.1.0"
 author        = "Gakuto Furuya"
 description   = "A type-safe Discord application runtime for Nim"
 license       = "MPL-2.0"

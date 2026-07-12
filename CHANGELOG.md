@@ -1,10 +1,10 @@
 # Changelog
 
-All notable changes are recorded here. Release numbering and compatibility
-policy remain undecided; the pinned Discord schema revision is recorded
-separately from any future package version.
+All notable changes are recorded here. Releases in the 0.1 series do not
+guarantee API compatibility. Discord schema revisions are tracked separately
+from the package version.
 
-## Unreleased
+## 0.1.0 - Unreleased
 
 - Establish the three-layer `raw`, runtime, and application architecture.
 - Pin 242 stable Discord HTTP operations and 538 lossless raw schemas behind a
@@ -33,8 +33,6 @@ separately from any future package version.
   multi-shard supervision, bounded dispatch, and selective entity caching.
 - Add policy-driven cache/REST resolution, process-local collectors, structured
   redacted logs, and stable metric contracts.
-- Separate the unassigned build label from the pinned Discord schema identity
-  and the Nimble packaging placeholder.
 - Add the separate Voice Gateway v8/DAVE package using the official libdave ABI.
 - Add ORC Tier 1 CI, raw-schema and Unicode-table drift checks, single-pass
   documentation with a manifest-derived page contract, operator and testing

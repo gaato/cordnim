@@ -1,12 +1,11 @@
 ## Build identity used by diagnostics and protocol client metadata.
 ##
-## Cordnim has no assigned release version yet. Development builds report the
-## label below instead of turning the Nimble packaging placeholder into a public
-## compatibility promise. Release tooling may replace it with
-## `-d:CordnimBuildLabel=<version>`.
+## The default build label follows the package version. Deployments may replace
+## it with `-d:CordnimBuildLabel=<version>` without changing the Discord schema
+## identity. Releases in the 0.1 series do not guarantee API compatibility.
 
 const
-  CordnimBuildLabel* {.strdefine.} = "development"
+  CordnimBuildLabel* {.strdefine.} = "0.1.0"
     ## Human-readable build label. This is not the Discord schema revision.
   CordnimServerIdent* = "cordnim/" & CordnimBuildLabel
     ## Product token used by the embedded interaction HTTP server.
