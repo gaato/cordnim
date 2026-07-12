@@ -173,6 +173,27 @@ proc malformedChunkPeer(server: StreamServer, client: StreamTransport) {.
   client.close()
   await noCancel(client.join())
 
+proc noContentPeer(server: StreamServer, client: StreamTransport) {.
+    async: (raises: []).} =
+  let state = cast[RawPeerState](server.udata)
+  inc state.connections
+  try:
+    while true:
+      let line = await client.readLine()
+      if line.len == 0:
+        break
+    discard await client.write(
+      "HTTP/1.1 204 No Content\r\n" &
+      "Connection: keep-alive\r\n\r\n")
+    # Keep the peer open exactly as Discord does. The client must know from the
+    # status that no body follows instead of waiting for EOF.
+    await client.join()
+  except CatchableError:
+    discard
+  if not client.closed:
+    client.close()
+    await noCancel(client.join())
+
 func testMeta(maxAttempts = 1,
               cancellationId = none(uint64)): RequestMeta =
   result = defaultRequestMeta()
@@ -472,6 +493,38 @@ proc runMalformedChunkScenario(): Future[HttpFailureOutcome] {.async.} =
     except cordErrors.DecodeError:
       failed = true
     return HttpFailureOutcome(failed: failed, requests: state.connections)
+  finally:
+    await client.stop()
+    await transport.close()
+    server.stop()
+    server.close()
+    await server.join()
+
+proc runNoContentScenario(): Future[bool] {.async.} =
+  let state = RawPeerState()
+  let server = createStreamServer(
+    initTAddress("127.0.0.1:0"),
+    noContentPeer,
+    {ServerFlags.ReuseAddr},
+    udata = state
+  )
+  server.start()
+  let transport = newWebhookHttpTransport(
+    "http://127.0.0.1:" & $server.localAddress().port)
+  let client = newChronosRestClient(transport.asRestTransport())
+  client.start()
+  try:
+    let request = initRawRequest(
+      routeKey(hmDelete, "/no-content"),
+      "/no-content",
+      meta = testMeta()
+    )
+    let pending = client.submit(request)
+    if not await pending.withTimeout(chronos.seconds(2)):
+      return false
+    let response = await pending
+    return response.status == 204 and response.body.len == 0 and
+      state.connections == 1
   finally:
     await client.stop()
     await transport.close()
@@ -932,6 +985,9 @@ suite "Discord HTTP transport":
     let outcome = waitFor runMalformedChunkScenario()
     check outcome.failed
     check outcome.requests == 1
+
+  test "204 without Content-Length completes on a persistent connection":
+    check waitFor runNoContentScenario()
 
   test "address resolution failures are retryable transport failures":
     check waitFor runDnsFailureScenario()

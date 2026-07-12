@@ -511,7 +511,14 @@ proc execute(transport: DiscordHttpTransport,
     var responseHeaders: seq[(string, string)]
     for item in response.headers.toList():
       responseHeaders.add((item.key, item.value))
-    let body = await response.readBounded(transport.maxResponseBodyBytes)
+    # Discord commonly returns 204 without Content-Length. Chronos otherwise
+    # treats such an HTTP/1.1 response as close-delimited and waits forever for
+    # EOF on a persistent connection. RFC 9110 forbids content on these status
+    # codes, so do not open a body reader; closeWait safely retires a connection
+    # that Chronos could not mark as bodyless from headers alone.
+    let body =
+      if response.status in [204, 205, 304]: newSeq[byte]()
+      else: await response.readBounded(transport.maxResponseBodyBytes)
     result = TransportResponse(
       status: response.status,
       headers: responseHeaders,
