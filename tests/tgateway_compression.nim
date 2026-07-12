@@ -166,10 +166,23 @@ block native_context_released_once_across_move_and_close:
   # Destruction of both the moved-from source and the closed owner is a no-op.
   doAssert openZlibStreamContexts() == 0
 
+block decoder_remains_usable_after_move:
+  var deflater = initDeflater()
+  defer: deflater.close()
+  block:
+    var source = initGatewayMessageDecoder(gatewayCompressionZlibStream)
+    var owner = move source
+    let decoded = owner.decode(binaryGatewayMessage(
+      deflater.compressSyncFlush("""{"op":10,"d":{"heartbeat_interval":45000}}""")))
+    doAssert decoded.isSome
+    doAssert decoded.get["op"].getInt == 10
+    owner.close()
+  doAssert openZlibStreamContexts() == 0
+
 block decoder_moves_but_is_not_copyable:
   # Move is supported (ownership transfers); copy/dup are disabled by the
-  # `=copy`/`=dup {.error.}` hooks on both `ZlibInflate` and the decoder itself, so
-  # the zlib context can never be duplicated and double-freed. (A `compiles`-based
+  # decoder's `=copy`/`=dup {.error.}` hooks, so two decoders can never alias the
+  # same mutable zlib context. (A `compiles`-based
   # negative is unreliable here: the move optimizer rewrites implicit copies as
   # moves, and an explicit cross-module `=copy`/`=dup` resolves to the generic;
   # `native_context_released_once_across_move_and_close` proves single release

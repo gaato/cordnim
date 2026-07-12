@@ -8,12 +8,12 @@
 ## payload may therefore span several WebSocket messages, so compressed bytes are
 ## buffered until the marker is seen and only then inflated.
 ##
-## Ownership: the native inflate state is a move-only resource. It lives in a
-## private `ZlibInflate` value with no GC-managed fields, so its `=destroy`
-## releases zlib exactly once and the enclosing `GatewayMessageDecoder` inherits
-## move-only semantics automatically. `openZlibStreamContexts` reports the number
-## of live native contexts so tests can prove release happens once on
-## destruction, move, and explicit close.
+## Ownership: zlib retains the address of the `ZStream` passed to
+## `inflateInit2`, so the native state lives in an address-stable private heap
+## owner. Moving `GatewayMessageDecoder` moves only that owner reference. The
+## decoder remains explicitly non-copyable, and the owner's `=destroy` releases
+## zlib exactly once. `openZlibStreamContexts` lets tests prove release on scope
+## exit, decoder moves, and explicit close.
 ##
 ## Safety bounds are separate for the two buffers: the compressed accumulator and
 ## the inflated output each have an independent ceiling, so neither an oversized
@@ -35,10 +35,11 @@ type
     gatewayCompressionNone, ## Plain UTF-8 JSON text frames.
     gatewayCompressionZlibStream ## One shared zlib stream across binary frames.
 
-  ZlibInflate = object ## Move-only owner of one native zlib inflate context.
-    ## It has no GC-managed fields, so a custom `=destroy` fully releases it.
+  ZlibInflateState = object ## Address-stable native zlib inflate state.
     zs: ZStream
     open: bool ## Whether `zs` holds an initialized context awaiting `inflateEnd`.
+
+  ZlibInflate = ref ZlibInflateState ## Heap owner whose address survives moves.
 
   GatewayMessageDecoder* = object ## Per-connection decoder state.
     ## Move-only because it owns a `ZlibInflate`; the compiler-generated destructor
@@ -65,31 +66,18 @@ proc openZlibStreamContexts*(): int {.raises: [].} =
   ## destroyed, moved-from, or closed, proving release happens exactly once.
   activeZlibContexts
 
-proc releaseInflate(ctx: var ZlibInflate) {.raises: [].} =
+proc releaseInflate(ctx: var ZlibInflateState) {.raises: [].} =
   ## Releases the native context once; safe to call repeatedly.
   if ctx.open:
     discard inflateEnd(ctx.zs)
     ctx.open = false
     dec activeZlibContexts
 
-proc `=destroy`(ctx: var ZlibInflate) =
+proc `=destroy`(ctx: var ZlibInflateState) =
   releaseInflate(ctx)
 
-proc `=wasMoved`(ctx: var ZlibInflate) {.raises: [].} =
-  ## Leaves a moved-from context owning nothing, so its `=destroy` is a no-op and
-  ## the native state is released exactly once by the move's destination.
-  ctx.zs = default(ZStream)
-  ctx.open = false
-
-proc `=copy`(dst: var ZlibInflate; src: ZlibInflate) {.error:
-  "a zlib inflate context is move-only".}
-
-proc `=dup`(src: ZlibInflate): ZlibInflate {.error:
-  "a zlib inflate context is move-only".}
-
-# Move-only fields do not make their container move-only. A bitwise copy of
-# `GatewayMessageDecoder` would duplicate the zlib context and double-free it.
-# Disable copy and dup on the decoder so ownership can only move.
+# Copying the private ref would create two decoders that mutate and close the
+# same inflate stream. Disable copy and dup so ownership can only move.
 proc `=copy`(
     dst: var GatewayMessageDecoder; src: GatewayMessageDecoder) {.error:
   "a gateway message decoder owns a zlib context and is move-only".}
@@ -121,6 +109,7 @@ proc initGatewayMessageDecoder*(
     maxInflatedBytes: int(maxInflatedBytes),
   )
   if compression == gatewayCompressionZlibStream:
+    new(result.inflate)
     # Window bits 15 selects the zlib wrapper Discord uses (not raw deflate).
     if inflateInit2(result.inflate.zs, Z_WINDOW_BITS_15) != Z_OK:
       raise newException(
@@ -130,7 +119,8 @@ proc initGatewayMessageDecoder*(
 
 proc close*(decoder: var GatewayMessageDecoder) {.raises: [].} =
   ## Releases the zlib context and drops buffered bytes. Idempotent.
-  releaseInflate(decoder.inflate)
+  if not decoder.inflate.isNil:
+    releaseInflate(decoder.inflate[])
   decoder.compressed.setLen(0)
 
 func endsWithSyncMarker(buffer: seq[byte]): bool {.raises: [].} =
@@ -155,13 +145,13 @@ proc parseValidJson(data: openArray[byte]): JsonNode {.
     raise newException(GatewayDecodeError, "gateway payload is not valid JSON")
 
 proc inflateComplete(
-    ctx: var ZlibInflate; input: var seq[byte]; maxOut: int): seq[byte] {.
+    ctx: ZlibInflate; input: var seq[byte]; maxOut: int): seq[byte] {.
     raises: [GatewayDecodeError].} =
   ## Inflates one marker-terminated chunk through the shared context.
   ##
   ## All input must be consumed at the sync boundary; leftover bytes are trailing
   ## garbage and a hard error. Output is capped at `maxOut`.
-  if not ctx.open:
+  if ctx.isNil or not ctx.open:
     raise newException(GatewayDecodeError, "zlib inflate context is closed")
   var scratch = newSeq[byte](inflateScratchBytes)
   ctx.zs.next_in = addr input[0]
