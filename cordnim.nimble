@@ -40,6 +40,7 @@ const publicEntries = [
   "src/cordnim/commands.nim",
   "src/cordnim/components.nim",
   "src/cordnim/core.nim",
+  "src/cordnim/events.nim",
   "src/cordnim/gateway.nim",
   "src/cordnim/interactions.nim",
   "src/cordnim/models.nim",

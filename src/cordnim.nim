@@ -7,7 +7,7 @@
 ## `cordnim/gateway` explicitly for lower-level protocol and transport control.
 
 import cordnim/[app, application_manifest, build_info, command_policies,
-  commands, components, core]
+  commands, components, core, events]
 from cordnim/interactions/http_runtime import InteractionHttpRuntime,
   localAddress, newInteractionHttpRuntime
 from cordnim/interactions/sodium_verifier import sodiumVerificationConfig,
@@ -16,7 +16,7 @@ from cordnim/interactions/verification import VerificationConfig,
   parseEd25519PublicKey
 
 export app, application_manifest, build_info, command_policies, commands,
-  components, core
+  components, core, events
 export InteractionHttpRuntime, VerificationConfig, localAddress,
   newInteractionHttpRuntime, parseEd25519PublicKey, sodiumVerificationConfig,
   sodiumVerifierEnabled
