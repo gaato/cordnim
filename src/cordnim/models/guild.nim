@@ -4,11 +4,28 @@ import std/[json, options]
 
 import ./common
 import ./role
+import ./user
 
 export common
 export role
+export user
 
 type
+  Ban* = object ## One guild ban and its optional moderation reason.
+    reason*: Option[string] ## Audit-log reason recorded for the ban, when any.
+    user*: User ## User excluded from the guild.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the ban.
+
+  GuildPruneResult* = object ## Estimated or completed guild prune count.
+    pruned*: Option[int64] ## Removed members, or none when count computation
+                           ## was disabled.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the result.
+
+  BulkBanResult* = object ## Per-user outcome from a bulk guild ban.
+    bannedUsers*: seq[UserId] ## Users successfully banned.
+    failedUsers*: seq[UserId] ## Users Discord could not ban.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the result.
+
   VerificationLevel* = enum ## Required verification before a member may chat.
     vlNone = 0 ## No verification requirement.
     vlLow = 1 ## Verified email required.
@@ -146,6 +163,35 @@ proc decodeGuildResponse*(node: JsonNode): Guild =
   requireNullablePresent(obj, "incidents_data", "guild", {JObject})
   decodeGuild(node)
 
+proc decodeBan*(node: JsonNode): Ban =
+  ## Decodes a strict pinned guild-ban response.
+  let obj = ensureObject(node, "guild ban")
+  result.reason = reqNullableString(obj, "reason", "guild ban")
+  result.user = decodeUser(requireField(obj, "user", "guild ban"))
+  result.snapshot = initSnapshot(obj, ["reason", "user"])
+
+proc decodeGuildPruneResult*(node: JsonNode): GuildPruneResult =
+  ## Decodes a prune preview or execution result. Discord may return `null`
+  ## when `compute_prune_count` is disabled.
+  let obj = ensureObject(node, "guild prune result")
+  result.pruned = reqNullableInt(obj, "pruned", "guild prune result")
+  result.snapshot = initSnapshot(obj, ["pruned"])
+
+proc decodeBulkBanResult*(node: JsonNode): BulkBanResult =
+  ## Decodes the successful and failed user sets from a bulk ban.
+  let obj = ensureObject(node, "bulk ban result")
+  for index, item in asArray(
+      requireField(obj, "banned_users", "bulk ban result"),
+      "bulk ban result.banned_users"):
+    result.bannedUsers.add(decodeId(UserId, item,
+      "bulk ban result.banned_users[" & $index & "]"))
+  for index, item in asArray(
+      requireField(obj, "failed_users", "bulk ban result"),
+      "bulk ban result.failed_users"):
+    result.failedUsers.add(decodeId(UserId, item,
+      "bulk ban result.failed_users[" & $index & "]"))
+  result.snapshot = initSnapshot(obj, ["banned_users", "failed_users"])
+
 proc parseGuild*(text: string): Guild =
   ## Decodes a Discord guild (base contract) from a JSON document string.
   decodeGuild(parseJsonObject(text, "guild"))
@@ -154,6 +200,18 @@ proc parseGuildResponse*(text: string): Guild =
   ## Decodes a strict `GuildResponse` from a JSON document string.
   decodeGuildResponse(parseJsonObject(text, "guild"))
 
+proc parseBan*(text: string): Ban =
+  ## Decodes a guild ban from a JSON document.
+  decodeBan(parseJsonObject(text, "guild ban"))
+
+proc parseGuildPruneResult*(text: string): GuildPruneResult =
+  ## Decodes a prune result from a JSON document.
+  decodeGuildPruneResult(parseJsonObject(text, "guild prune result"))
+
+proc parseBulkBanResult*(text: string): BulkBanResult =
+  ## Decodes a bulk-ban result from a JSON document.
+  decodeBulkBanResult(parseJsonObject(text, "bulk ban result"))
+
 proc rawJson*(guild: Guild): JsonNode =
   ## Returns an independent deep copy of the guild's original JSON.
   rawJson(guild.snapshot)
@@ -161,3 +219,27 @@ proc rawJson*(guild: Guild): JsonNode =
 proc unknownFields*(guild: Guild): seq[UnknownField] =
   ## Returns deep copies of guild fields not consumed by the decoder.
   unknownFields(guild.snapshot)
+
+proc rawJson*(ban: Ban): JsonNode =
+  ## Returns an independent deep copy of the ban's original JSON.
+  rawJson(ban.snapshot)
+
+proc unknownFields*(ban: Ban): seq[UnknownField] =
+  ## Returns unconsumed ban fields.
+  unknownFields(ban.snapshot)
+
+proc rawJson*(value: GuildPruneResult): JsonNode =
+  ## Returns an independent deep copy of the prune result's original JSON.
+  rawJson(value.snapshot)
+
+proc unknownFields*(value: GuildPruneResult): seq[UnknownField] =
+  ## Returns unconsumed prune-result fields.
+  unknownFields(value.snapshot)
+
+proc rawJson*(value: BulkBanResult): JsonNode =
+  ## Returns an independent deep copy of the bulk-ban result's original JSON.
+  rawJson(value.snapshot)
+
+proc unknownFields*(value: BulkBanResult): seq[UnknownField] =
+  ## Returns unconsumed bulk-ban fields.
+  unknownFields(value.snapshot)
