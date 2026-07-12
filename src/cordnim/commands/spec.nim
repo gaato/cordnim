@@ -238,6 +238,39 @@ type
     schemas: seq[CommandSpec]
     handlers: seq[CommandHandler[S]]
 
+func `$`*(invocation: CommandInvocation): string =
+  ## Metadata-only rendering; option values and resolved entities stay opaque.
+  "CommandInvocation(kind: " & $invocation.kind & ", name: " &
+    invocation.name & ", user: " & $invocation.userId & ")"
+
+func repr*(invocation: CommandInvocation): string =
+  $invocation
+
+proc `%`*(invocation: CommandInvocation): JsonNode =
+  result = %*{
+    "kind": $invocation.kind,
+    "name": invocation.name,
+    "userId": $invocation.userId
+  }
+  if invocation.guildId.isSome:
+    result["guildId"] = %($invocation.guildId.get())
+
+proc toJsonHook*(invocation: CommandInvocation): JsonNode =
+  %invocation
+
+func `$`*[S](context: CommandCtx[S]): string =
+  ## Never traverses application services or response authority.
+  "CommandCtx(invocation: " & $context.invocationValue & ")"
+
+func repr*[S](context: CommandCtx[S]): string =
+  $context
+
+proc `%`*[S](context: CommandCtx[S]): JsonNode =
+  %*{"invocation": %context.invocationValue}
+
+proc toJsonHook*[S](context: CommandCtx[S]): JsonNode =
+  %context
+
 # --- Discord locales and localization dictionaries ---
 
 func isDiscordLocale*(text: string): bool =
@@ -1328,6 +1361,25 @@ type
                                     ## handler registry keyed by command,
                                     ## optional group/subcommand, and option.
     registrations: seq[AutocompleteRegistration[S]]
+
+func `$`*(request: AutocompleteRequest): string =
+  ## Metadata-only rendering; partial input and option values stay opaque.
+  "AutocompleteRequest(command: " & $request.command.kind & ":" &
+    request.command.name & ", focused: " & request.focusedName & ")"
+
+func repr*(request: AutocompleteRequest): string =
+  $request
+
+proc `%`*(request: AutocompleteRequest): JsonNode =
+  %*{
+    "commandKind": $request.command.kind,
+    "commandName": request.command.name,
+    "focusedName": request.focusedName,
+    "userId": $request.userId
+  }
+
+proc toJsonHook*(request: AutocompleteRequest): JsonNode =
+  %request
 
 func initAutocompleteChoice*(name, value: string,
     nameLocalizations = initLocalizationMap()): AutocompleteChoice =

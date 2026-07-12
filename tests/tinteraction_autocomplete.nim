@@ -1,8 +1,10 @@
-import std/[atomics, json, options, os, strutils, unittest]
+import std/[atomics, json, jsonutils, options, os, strutils, unittest]
 
 import chronos
 
 import cordnim/[commands, interactions]
+import cordnim/interactions/autocomplete {.all.}
+import cordnim/interactions/dispatch_core {.all.}
 import cordnim/core/[errors, ids]
 import cordnim/rest/[chronos_driver, request]
 
@@ -36,6 +38,9 @@ proc interaction(value: JsonNode, optionType = 3, nested = false): JsonNode =
 proc suggest(services: ref Services, request: AutocompleteRequest):
     Future[seq[AutocompleteChoice]] {.async.} =
   discard services
+  for rendered in [$request, repr(request), $(%request),
+                   $jsonutils.toJson(request)]:
+    doAssert "tkn" notin rendered
   doAssert request.command.name == "search"
   doAssert request.focusedName == "query"
   doAssert request.focusedText() == "ni"
@@ -90,8 +95,8 @@ suite "autocomplete dispatch bridge":
     proc scenario(): Future[JsonNode] {.async.} =
       let selected = await selectAutocompleteResponse(
         registryWith(suggest), svc(), interaction(%"ni"), monotonicMillis())
-      doAssert not selected.delivery.isNil
-      selected.delivery.confirmInitialDelivery()
+      doAssert selected.hasDelivery()
+      selected.confirmDelivery()
       return selected.body
 
     let body = waitFor scenario()
@@ -105,7 +110,7 @@ suite "autocomplete dispatch bridge":
       let selected = await selectAutocompleteResponse(
         initAutocompleteRegistry[Services](), svc(), interaction(%"ni"),
         monotonicMillis())
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
       return selected.body
 
     let body = waitFor scenario()
@@ -119,7 +124,7 @@ suite "autocomplete dispatch bridge":
       let selected = await selectAutocompleteResponse(
         registryWith(suggest, some("group"), some("sub")),
         svc(), nested, monotonicMillis())
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
       return selected.body
 
     check waitFor(scenario())["data"]["choices"].len == 2

@@ -1,10 +1,14 @@
-import std/[atomics, json, options, strutils, unittest]
+import std/[atomics, json, jsonutils, options, strutils, unittest]
 
 import chronos
 
 import cordnim/[components, interactions]
 import cordnim/core/ids
+import cordnim/core/secrets
 import cordnim/rest/chronos_driver
+import cordnim/interactions/component_router {.all.}
+import cordnim/interactions/dispatch_core {.all.}
+import cordnim/interactions/envelope {.all.}
 
 type
   Services = object
@@ -54,6 +58,8 @@ proc svc(prefix = ""): ref Services =
 proc interaction(customId: string): JsonNode =
   %*{
     "id": "100",
+    "application_id": "200",
+    "token": "not-logged",
     "type": 3,
     "context": 1,
     "user": {"id": "42"},
@@ -63,8 +69,35 @@ proc interaction(customId: string): JsonNode =
     }
   }
 
+proc recordingSenderFactory(
+    onSend: proc(response: ContextResponse) {.gcsafe, raises: [].}):
+    InteractionSenderFactory =
+  result = proc(applicationId: ApplicationId,
+                token: Secret[InteractionToken]): ContextResponseSender
+                {.gcsafe, raises: [].} =
+    result = proc(response: ContextResponse): Future[void]
+        {.gcsafe, raises: [].} =
+      onSend(response)
+      result = newFuture[void]("test.recording.sender")
+      result.complete()
+
+proc failingSenderFactory(): InteractionSenderFactory =
+  result = proc(applicationId: ApplicationId,
+                token: Secret[InteractionToken]): ContextResponseSender
+                {.gcsafe, raises: [].} =
+    result = proc(response: ContextResponse): Future[void]
+        {.gcsafe, raises: [].} =
+      result = newFuture[void]("test.failing.sender")
+      result.fail(newException(ValueError, "SECRET transport detail"))
+
 proc handleDeploy(context: ComponentCtx[Services], action: DeployAction):
     Future[ComponentResponse] {.async.} =
+  for rendered in [$context, repr(context), $(%context),
+                   $jsonutils.toJson(context),
+                   $context.invocation, repr(context.invocation),
+                   $(%context.invocation),
+                   $jsonutils.toJson(context.invocation)]:
+    doAssert "not-logged" notin rendered
   return updateComponent(%*{
     "content": context.services.prefix & $action.buildId
   })
@@ -159,24 +192,21 @@ suite "persistent component router":
   test "deferred update edits only after confirmed delivery":
     var edits: Atomic[int]
     edits.store(0)
-    proc postAck(interaction: JsonNode, response: ContextResponse):
-        Future[void] {.gcsafe, raises: [].} =
-      doAssert interaction{"id"}.getStr() == "100"
+    proc onSend(response: ContextResponse) {.gcsafe, raises: [].} =
       doAssert response.action == raEditOriginal
       doAssert response.body{"content"}.getStr() == "edited:8"
       edits.store(edits.load() + 1)
-      result = newFuture[void]("test.component.postack")
-      result.complete()
 
     proc scenario(): Future[JsonNode] {.async.} =
       let codec = routeCodec(12)
       let customId = codec.encode(DeployAction(buildId: 8), 2_000)
-      let router = newComponentRouter(svc(), codec.envelope, postAck)
+      let router = newComponentRouterWithSenderFactory(
+        svc(), codec.envelope, recordingSenderFactory(onSend))
       router.register(codec, handleDeferEdit)
       let selected = await router.selectResponse(
         interaction(customId), 1_000, monotonicMillis())
       doAssert edits.load() == 0
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
       await sleepAsync(10.milliseconds)
       doAssert edits.load() == 1
       await router.close()
@@ -206,12 +236,6 @@ suite "persistent component router":
   test "retained post-ack failures reach the redacted observer only":
     var observed: Atomic[int]
     observed.store(0)
-    proc failingPostAck(interaction: JsonNode, response: ContextResponse):
-        Future[void] {.gcsafe, raises: [].} =
-      discard interaction
-      discard response
-      result = newFuture[void]("test.component.failing-postack")
-      result.fail(newException(ValueError, "SECRET transport detail"))
     proc observer(interactionId: Option[InteractionId])
         {.gcsafe, raises: [].} =
       if interactionId.isSome and $interactionId.get() == "100":
@@ -220,12 +244,12 @@ suite "persistent component router":
     proc scenario(): Future[void] {.async.} =
       let codec = routeCodec(14)
       let customId = codec.encode(DeployAction(buildId: 8), 2_000)
-      let router = newComponentRouter(
-        svc(), codec.envelope, failingPostAck, observer)
+      let router = newComponentRouterWithSenderFactory(
+        svc(), codec.envelope, failingSenderFactory(), observer)
       router.register(codec, handleDeferEdit)
       let selected = await router.selectResponse(
         interaction(customId), 1_000, monotonicMillis())
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
       await sleepAsync(10.milliseconds)
       await router.close()
 
@@ -244,7 +268,7 @@ suite "persistent component router":
       await router.close()
       # close cancelled the retained edit waiter. Its cancellation must not
       # propagate into the exchange-owned delivery receipt.
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
 
     waitFor scenario()
 

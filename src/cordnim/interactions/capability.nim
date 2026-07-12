@@ -5,6 +5,8 @@
 ## commit so the network `await` remains visible. The atomic responder remains
 ## authoritative when aliases or asynchronous failure escape static checking.
 
+import std/json
+
 import cordnim/rest/request
 import ./responder
 
@@ -42,6 +44,54 @@ proc `=copy`*[Next](destination: var PendingInitial[Next],
                     source: PendingInitial[Next]) {.error:
     "pending interaction response capabilities are move-only".} ## Rejects
     ## copying a claimed initial response while transport I/O is pending.
+
+func `$`*[State](interaction: Interaction[State]): string =
+  ## Metadata-only rendering; never traverses the responder claim or state.
+  "Interaction(type: " & $interaction.interactionType & ")"
+
+func repr*[State](interaction: Interaction[State]): string =
+  ## Safe debug rendering that never reaches the atomic responder authority.
+  $interaction
+
+proc `%`*[State](interaction: Interaction[State]): JsonNode =
+  ## Serializes only the safe interaction-type metadata.
+  %*{"interactionType": $interaction.interactionType}
+
+proc toJsonHook*[State](interaction: Interaction[State]): JsonNode =
+  ## Redacts move-only capabilities serialized through `std/jsonutils`.
+  %interaction
+
+func `$`*[Next](pending: PendingInitial[Next]): string =
+  ## Metadata-only rendering of a pending claim; never traverses the claim.
+  "PendingInitial(kind: " & $pending.responseKind & ")"
+
+func repr*[Next](pending: PendingInitial[Next]): string =
+  ## Safe debug rendering that never reaches the pending response claim.
+  $pending
+
+proc `%`*[Next](pending: PendingInitial[Next]): JsonNode =
+  ## Serializes safe response-kind metadata only.
+  %*{"responseKind": $pending.responseKind}
+
+proc toJsonHook*[Next](pending: PendingInitial[Next]): JsonNode =
+  ## Redacts pending claims serialized through std/jsonutils.
+  %pending
+
+func `$`*[Next](begun: BeginInitialResult[Next]): string =
+  ## Safe transition outcome without traversing a pending claim.
+  if begun.ok: "BeginInitialResult(ok: true)"
+  else: "BeginInitialResult(ok: false, error: " & $begun.error & ")"
+
+func repr*[Next](begun: BeginInitialResult[Next]): string =
+  $begun
+
+proc `%`*[Next](begun: BeginInitialResult[Next]): JsonNode =
+  result = %*{"ok": begun.ok}
+  if not begun.ok:
+    result["error"] = %($begun.error)
+
+proc toJsonHook*[Next](begun: BeginInitialResult[Next]): JsonNode =
+  %begun
 
 proc freshInteraction*(interactionType: InteractionType,
                        receivedAt: MonoMillis): Interaction[Fresh] =

@@ -25,6 +25,8 @@
 ## it must abort the connection and RESUME from the last sequence that was
 ## admitted with `dispatchAccepted`, because an overflowed event was never queued.
 
+import std/json
+
 import chronos
 
 import ./[dispatch, session]
@@ -115,6 +117,36 @@ func initDispatchEvent*(
     receivedAtMs: receivedAtMs,
     payload: payload,
   )
+
+func eventSummary(event: DispatchEvent): string =
+  ## Renders only low-cardinality, non-secret metadata.
+  ##
+  ## The `payload` field is deliberately excluded: it is raw event data that can
+  ## carry an interaction token or other credential-bearing content, so no
+  ## diagnostic rendering of a `DispatchEvent` may traverse it.
+  "DispatchEvent(name: " & event.name & ", shard: " &
+    $event.shardId.toUint16 & ", sequence: " & $event.sequence.toInt64 & ")"
+
+func `$`*(event: DispatchEvent): string =
+  ## Safe string rendering that never includes the raw payload.
+  event.eventSummary()
+
+func repr*(event: DispatchEvent): string =
+  ## Safe debug rendering that never includes the raw payload.
+  event.eventSummary()
+
+proc `%`*(event: DispatchEvent): JsonNode =
+  ## Serializes only safe metadata; the raw payload is never emitted.
+  %*{
+    "name": event.name,
+    "shardId": int(event.shardId.toUint16),
+    "sequence": event.sequence.toInt64,
+    "partitionKey": $event.partitionKey
+  }
+
+proc toJsonHook*(event: DispatchEvent): JsonNode =
+  ## Redacts dispatch events serialized through `std/jsonutils`.
+  %event
 
 func laneCount*(runtime: GatewayDispatchRuntime): int {.inline, raises: [].} =
   ## Returns the number of ordered lanes, one per worker.

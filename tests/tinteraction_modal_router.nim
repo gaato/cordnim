@@ -1,8 +1,9 @@
-import std/[json, options, strutils, unittest]
+import std/[json, jsonutils, options, strutils, unittest]
 
 import chronos
 
 import cordnim/[components, interactions]
+import cordnim/interactions/modal_router {.all.}
 import cordnim/rest/chronos_driver
 
 type
@@ -87,6 +88,12 @@ proc submission(customId: string, summary = "Ship it",
 proc handleReview(context: ModalCtx[Services], route: ReviewRoute,
                   form: ModalDecodeResult[ReviewForm]):
     Future[ComponentResponse] {.async.} =
+  for rendered in [$context, repr(context), $(%context),
+                   $jsonutils.toJson(context),
+                   $context.invocation, repr(context.invocation),
+                   $(%context.invocation),
+                   $jsonutils.toJson(context.invocation)]:
+    doAssert "tkn" notin rendered
   if not form.ok:
     return replyComponent(%*{"content": "invalid:" & $form.problems.len})
   return replyComponent(%*{"content":

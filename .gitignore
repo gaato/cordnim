@@ -6,6 +6,8 @@ build/
 /tests/tcache_resolver
 /tests/tcollectors
 /tests/tobservability
+/tests/t*
+!/tests/*.nim
 /tools/__pycache__/
 /tools/schema_codegen
 deps/*

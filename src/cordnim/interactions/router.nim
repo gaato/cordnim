@@ -14,10 +14,13 @@ import cordnim/core/errors
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import cordnim/runtime/task_scope
-import ./[context, dispatch_core, exchange, http_server, responder]
+import ./[context, exchange, http_server, responder]
+import ./dispatch_core {.all.}
+import ./envelope {.all.}
 
 export dispatch_core.SelectedResponse, dispatch_core.InteractionClass,
   dispatch_core.classify
+export envelope.InteractionSnapshot
 
 # The initial-response send margin and correlation-ID extraction are shared with
 # every other interaction router through `dispatch_core`.
@@ -33,11 +36,6 @@ type
   CommandRouterClosedError* = object of CatchableError ## A route, selection, or
     ## adapter call was attempted after the router began closing.
 
-  DeferredCompletionSink* = proc(interaction: JsonNode,
-                                  result: CommandResult): Future[void]
-    {.gcsafe, raises: [].} ## Edits the deferred original response after a
-    ## command finishes.
-
   DeferredFailureKind* = enum ## Background phase that failed after an
     ## automatic defer.
     dfkHandler, ## The deferred command handler failed.
@@ -51,18 +49,17 @@ type
   InitialResponseSender* = proc(response: JsonNode): Future[void]
     {.gcsafe, raises: [].} ## Sends a Gateway interaction callback response.
 
-  PostAckResponseSink* = proc(interaction: JsonNode,
-                              response: ContextResponse):
-                              Future[void]
-    {.gcsafe, raises: [].} ## Sends an edit or follow-up after acknowledgement.
-
   CommandRouter*[S] = ref object ## Shared typed command router and task owner.
     ## One Chronos event-loop owner serializes selection, routing, and close.
+    ##
+    ## Post-acknowledgement authority is a capability owned by each interaction's
+    ## envelope, not a payload retained by the router: the router keeps only a
+    ## credential-blind `senderFactory` and never holds an interaction JsonNode
+    ## past selection.
     app: DiscordApp[S]
     tasks: TaskScope
-    completionSink: DeferredCompletionSink
+    senderFactory: InteractionSenderFactory
     failureObserver: DeferredFailureObserver
-    postAckSink: PostAckResponseSink
     closed: bool
     closeTask: Future[void].Raising([])
 
@@ -302,30 +299,40 @@ proc commandInvocation*(interaction: JsonNode): CommandInvocation =
     of ckChatInput:
       discard
 
-proc newCommandRouter*[S](app: DiscordApp[S],
-                          completionSink: DeferredCompletionSink = nil,
-                          failureObserver: DeferredFailureObserver = nil,
-                          postAckSink: PostAckResponseSink = nil):
-                          CommandRouter[S] =
+proc newCommandRouterWithSenderFactory[S](
+    app: DiscordApp[S],
+    senderFactory: InteractionSenderFactory,
+    failureObserver: DeferredFailureObserver = nil): CommandRouter[S] =
   ## Creates a router with a structured scope for deferred commands.
+  ##
+  ## `senderFactory` builds one immutable post-acknowledgement sender per
+  ## interaction from the credentials the ingress envelope captured. The router
+  ## never sees an interaction token and never retains a mutable payload.
   if app.isNil:
     raise newException(ValueError, "command router requires an application")
   CommandRouter[S](
     app: app,
     tasks: newTaskScope(),
-    completionSink: completionSink,
-    failureObserver: failureObserver,
-    postAckSink: postAckSink
+    senderFactory: senderFactory,
+    failureObserver: failureObserver
   )
 
-proc reportDeferredFailure[S](router: CommandRouter[S], interaction: JsonNode,
+proc newCommandRouter*[S](app: DiscordApp[S],
+                          failureObserver: DeferredFailureObserver = nil):
+                          CommandRouter[S] =
+  ## Creates a credential-blind router for direct tests and custom selection.
+  newCommandRouterWithSenderFactory(app, nil, failureObserver)
+
+proc reportDeferredFailure[S](router: CommandRouter[S],
+                              interactionId: Option[InteractionId],
                               kind: DeferredFailureKind) =
   # Exception messages are intentionally excluded: handlers and transports may
   # embed secrets. Observability still gets a stable phase and correlation ID.
   if not router.failureObserver.isNil:
-    router.failureObserver(kind, interaction.observedInteractionId())
+    router.failureObserver(kind, interactionId)
 
-proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
+proc completeDeferred[S](router: CommandRouter[S],
+                         interactionId: Option[InteractionId],
                          exchange: InteractionExchange,
                          commandFuture: Future[CommandResult]): Future[void] {.
                          async: (raises: []).} =
@@ -335,24 +342,27 @@ proc completeDeferred[S](router: CommandRouter[S], interaction: JsonNode,
   except CancelledError:
     return
   except CatchableError:
-    router.reportDeferredFailure(interaction, dfkHandler)
+    router.reportDeferredFailure(interactionId, dfkHandler)
     return
 
-  if router.completionSink.isNil:
-    return
   try:
     # A selected type-5 response is not an acknowledgement until the ingress
-    # transport confirms its write. Do not let the webhook PATCH overtake that
-    # write or run after an ambiguous delivery.
-    await exchange.deliveryReceipt()
-    await router.completionSink(interaction, commandResult)
+    # transport confirms its write. `sendAfterDelivery` waits on that receipt and
+    # then uses the envelope-owned sender, so the webhook PATCH can neither
+    # overtake the write nor run after an ambiguous delivery, and mutating the
+    # caller's original JSON cannot redirect it.
+    await exchange.sendAfterDelivery(ContextResponse(
+      action: raEditOriginal,
+      visibility: vPublic,
+      body: commandResult.editOriginalPayload()))
   except CancelledError:
     # Scope shutdown is an expected lifecycle event, not a handler failure.
     discard
   except CatchableError:
-    router.reportDeferredFailure(interaction, dfkCompletion)
+    router.reportDeferredFailure(interactionId, dfkCompletion)
 
-proc observeBackground[S](router: CommandRouter[S], interaction: JsonNode,
+proc observeBackground[S](router: CommandRouter[S],
+                          interactionId: Option[InteractionId],
                           commandFuture: Future[CommandResult]): Future[void] {.
                           async: (raises: []).} =
   ## Retains a handler that deliberately acknowledged before it completed.
@@ -361,7 +371,7 @@ proc observeBackground[S](router: CommandRouter[S], interaction: JsonNode,
   except CancelledError:
     discard
   except CatchableError:
-    router.reportDeferredFailure(interaction, dfkHandler)
+    router.reportDeferredFailure(interactionId, dfkHandler)
 
 func safeInitialDelay(responder: InteractionResponder,
                       now: MonoMillis): int64 =
@@ -389,7 +399,8 @@ proc ensureOpen[S](router: CommandRouter[S]) =
   if router.closed:
     raise newException(CommandRouterClosedError, "command router is closed")
 
-proc commandResultOrRedact[S](router: CommandRouter[S], interaction: JsonNode,
+proc commandResultOrRedact[S](router: CommandRouter[S],
+                              interactionId: Option[InteractionId],
                               commandFuture: Future[CommandResult]):
                               CommandResult =
   ## Reads a finished command future's result, redacting a pre-acknowledgement
@@ -406,39 +417,36 @@ proc commandResultOrRedact[S](router: CommandRouter[S], interaction: JsonNode,
   except CancelledError:
     raise
   except CatchableError:
-    router.reportDeferredFailure(interaction, dfkHandler)
+    router.reportDeferredFailure(interactionId, dfkHandler)
     raise newException(CommandApplicationError,
       "command application failed before acknowledgement")
 
-proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
+proc selectResponse[S](router: CommandRouter[S],
+                        envelope: InteractionEnvelope,
                         receivedAt: MonoMillis):
                         Future[SelectedResponse] {.async.} =
   ## Selects one ACK body for a command; delivery is confirmed by the adapter.
   ##
-  ## The unified `InteractionDispatcher` calls this after classifying an
-  ## application command, so HTTP and Gateway ingress share the exact selection,
-  ## auto-defer, and retention logic. A handler or middleware failure before the
-  ## interaction is acknowledged surfaces only as a redacted
+  ## The unified `InteractionDispatcher` forms the envelope at ingress and calls
+  ## this after classifying an application command, so HTTP and Gateway ingress
+  ## share the exact selection, auto-defer, and retention logic. The exchange
+  ## retains only the envelope's preconstructed sender; the interaction payload
+  ## is decoded from the envelope's token-free copy. A handler or middleware
+  ## failure before acknowledgement surfaces only as a redacted
   ## `CommandApplicationError`.
   router.ensureOpen()
 
+  let interaction = envelope.decodingJson()
+  let interactionId = envelope.observedInteractionId()
   let invocation = interaction.commandInvocation()
   let responder = newInteractionResponder(receivedAt)
-
-  proc sendPostAck(response: ContextResponse): Future[void] {.
-      closure, gcsafe, raises: [CatchableError].} =
-    if router.postAckSink.isNil:
-      raise newException(InteractionExchangeError,
-        "post-acknowledgement response transport is not configured")
-    {.cast(gcsafe).}:
-      return router.postAckSink(interaction, response)
 
   let exchange = newInteractionExchange(
     ikApplicationCommand,
     invocation.context.responsePolicy,
     responder,
     invocation.context.followupBudget,
-    sendPostAck
+    envelope.postAckSender()
   )
   let commandIndex = router.app.commands.find(invocation.key)
   if commandIndex < 0:
@@ -470,7 +478,7 @@ proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
       await commandFuture.cancelAndWait()
     else:
       discard router.tasks.spawn(
-        router.observeBackground(interaction, commandFuture))
+        router.observeBackground(interactionId, commandFuture))
     commandRetained = true
 
   try:
@@ -490,7 +498,7 @@ proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
           responder.remainingAckMs(monotonicMillis()) >
             InitialResponseSendMarginMs:
         let commandResult = router.commandResultOrRedact(
-        interaction, commandFuture)
+          interactionId, commandFuture)
         if exchange.initialResponseReady:
           let selected = exchange.selectedResponse()
           retainExplicitHandler()
@@ -516,7 +524,7 @@ proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
     let remaining = responder.remainingAckMs(monotonicMillis())
     if commandFuture.finished and remaining > InitialResponseSendMarginMs:
       let commandResult = router.commandResultOrRedact(
-        interaction, commandFuture)
+          interactionId, commandFuture)
       if exchange.initialResponseReady:
         let selected = exchange.selectedResponse()
         retainExplicitHandler()
@@ -549,7 +557,7 @@ proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
       await commandFuture.cancelAndWait()
     else:
       discard router.tasks.spawn(
-        router.completeDeferred(interaction, exchange, commandFuture))
+        router.completeDeferred(interactionId, exchange, commandFuture))
     commandRetained = true
     return selected
   finally:
@@ -562,17 +570,29 @@ proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
     if not commandRetained:
       await commandFuture.cancelAndWait()
 
-proc route*[S](router: CommandRouter[S], interaction: JsonNode,
-               receivedAt: MonoMillis): Future[JsonNode] {.async.} =
+proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
+                        receivedAt: MonoMillis):
+                        Future[SelectedResponse] {.async.} =
+  ## Forms the ingress envelope for a verified payload, then selects a response.
+  ##
+  ## Adapters and harness callers pass raw JSON; the envelope captures the
+  ## credentials and builds the post-acknowledgement sender exactly once here,
+  ## before any handler runs.
+  return await router.selectResponse(
+    looseInteractionEnvelope(interaction, router.senderFactory), receivedAt)
+
+proc route[S](router: CommandRouter[S], interaction: JsonNode,
+               receivedAt: MonoMillis): Future[JsonNode] {.used, async.} =
   ## Selects and confirms a response for direct test/harness callers.
   ##
   ## Real HTTP ingress uses `asHttpHandler`, which confirms only after the
   ## Chronos socket write succeeds.
   let selected = await router.selectResponse(interaction, receivedAt)
-  selected.delivery.confirmInitialDelivery()
+  selected.confirmDelivery()
   return selected.body
 
-proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
+proc asHttpHandler[S](router: CommandRouter[S]): UnsafeInteractionHttpHandler {.
+    used.} =
   ## Adapts the shared router to verified HTTP ingress.
   if router.isNil or router.app.isNil or
       router.app.config.interactionIngress != ingressHttp:
@@ -603,7 +623,7 @@ proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
       for index, value in serialized:
         bytes[index] = byte(ord(value))
 
-      let delivery = selected.delivery
+      let delivery = selected.deliveryAuthority()
       proc confirmDelivery() {.closure, gcsafe, raises: [].} =
         delivery.confirmInitialDelivery()
       proc markDeliveryUnknown() {.closure, gcsafe, raises: [].} =
@@ -615,9 +635,10 @@ proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
     {.cast(gcsafe).}:
       return dispatch()
 
-proc routeGateway*[S](router: CommandRouter[S], interaction: JsonNode,
+proc routeGateway[S](router: CommandRouter[S], interaction: JsonNode,
                       receivedAt: MonoMillis,
-                      sender: InitialResponseSender): Future[void] {.async.} =
+                      sender: InitialResponseSender): Future[void] {.
+                      used, async.} =
   ## Routes the same command model through a Gateway callback sender.
   if sender.isNil:
     raise newException(ValueError, "Gateway interaction sender is required")
@@ -628,12 +649,12 @@ proc routeGateway*[S](router: CommandRouter[S], interaction: JsonNode,
   let selected = await router.selectResponse(interaction, receivedAt)
   try:
     await sender(selected.body)
-    selected.delivery.confirmInitialDelivery()
+    selected.confirmDelivery()
   except CancelledError:
-    selected.delivery.markInitialDeliveryUnknown()
+    selected.markDeliveryUnknown()
     raise
   except CatchableError:
-    selected.delivery.markInitialDeliveryUnknown()
+    selected.markDeliveryUnknown()
     raise
 
 proc close*[S](router: CommandRouter[S]): Future[void] {.

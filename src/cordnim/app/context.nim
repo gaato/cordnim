@@ -26,6 +26,29 @@ proc newContext*(exchange: InteractionExchange): Context =
     raise newException(ValueError, "interaction exchange is required")
   Context(exchangeValue: exchange)
 
+func contextSummary(context: Context): string =
+  ## Metadata-only rendering. A `Context` transitively reaches the exchange's
+  ## credential-capturing sender, so no renderer may traverse into it.
+  if context.isNil: "Context(nil)"
+  else: "Context(interactionType: " & $context.exchangeValue.interactionType & ")"
+
+func `$`*(context: Context): string =
+  ## Safe rendering: response authority stays unobservable through a context.
+  context.contextSummary()
+
+func repr*(context: Context): string =
+  ## Safe debug rendering that never reaches the exchange or its sender.
+  context.contextSummary()
+
+proc `%`*(context: Context): JsonNode =
+  ## Serializes only the safe interaction-type metadata.
+  if context.isNil: newJNull()
+  else: %*{"interactionType": $context.exchangeValue.interactionType}
+
+proc toJsonHook*(context: Context): JsonNode =
+  ## Redacts contexts serialized through `std/jsonutils`.
+  %context
+
 func interactionType*(context: Context): InteractionType =
   ## Returns the Discord interaction class handled by this context.
   if context.isNil:

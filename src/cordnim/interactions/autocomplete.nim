@@ -20,6 +20,7 @@ import cordnim/commands
 import cordnim/core/errors
 import cordnim/rest/[chronos_driver, request]
 import ./[context, dispatch_core, exchange, responder, response_codec]
+import ./envelope {.all.}
 
 type
   AutocompleteDispatchError* = object of CatchableError
@@ -34,8 +35,9 @@ proc selectAutocomplete*(exchange: InteractionExchange, data: JsonNode) =
   response.validateInitialResponse()
   exchange.selectInitial(response)
 
-proc selectAutocompleteResponse*[S](registry: AutocompleteRegistry[S],
-                                    services: ref S, interaction: JsonNode,
+proc selectAutocompleteResponse[S](registry: AutocompleteRegistry[S],
+                                    services: ref S,
+                                    ingress: InteractionEnvelope,
                                     receivedAt: MonoMillis,
                                     observer: RetainedFailureObserver = nil):
                                     Future[SelectedResponse] {.async.} =
@@ -45,6 +47,7 @@ proc selectAutocompleteResponse*[S](registry: AutocompleteRegistry[S],
   ## transport. An empty or unmatched registry yields a valid empty type-8
   ## callback. Decode, handler, and choice-validation failures cross this
   ## boundary only as a redacted `AutocompleteDispatchError`.
+  let interaction = ingress.decodingJson()
   let responder = newInteractionResponder(receivedAt)
   let exchange = newInteractionExchange(
     ikAutocomplete,
@@ -101,7 +104,7 @@ proc selectAutocompleteResponse*[S](registry: AutocompleteRegistry[S],
       raise newException(AutocompleteDispatchError,
         "autocomplete response could not be selected")
 
-  let observedId = interaction.observedInteractionId()
+  let observedId = ingress.observedInteractionId()
   let delay = responder.remainingAckMs(monotonicMillis()) -
     InitialResponseSendMarginMs
   if delay <= 0:
@@ -131,3 +134,13 @@ proc selectAutocompleteResponse*[S](registry: AutocompleteRegistry[S],
     await timer.cancelAndWait()
     if not application.finished:
       await application.cancelAndWait()
+
+proc selectAutocompleteResponse[S](registry: AutocompleteRegistry[S],
+                                   services: ref S, interaction: JsonNode,
+                                   receivedAt: MonoMillis,
+                                   observer: RetainedFailureObserver = nil):
+                                   Future[SelectedResponse] {.async.} =
+  ## Internal raw-payload harness overload; production dispatch forms the envelope.
+  return await selectAutocompleteResponse(
+    registry, services, looseInteractionEnvelope(interaction),
+    receivedAt, observer)

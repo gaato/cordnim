@@ -3,6 +3,8 @@ import std/[atomics, json, options, strutils, unittest]
 import chronos
 
 import cordnim/[app, commands, components, interactions]
+import cordnim/interactions/dispatcher {.all.}
+import cordnim/interactions/dispatch_core {.all.}
 import cordnim/core/ids
 import cordnim/rest/chronos_driver
 
@@ -364,7 +366,7 @@ suite "unified interaction dispatcher":
       let selected = await dispatcher.dispatch(payload, monotonicMillis())
       doAssert selected.body["type"].getInt() == 6
       await dispatcher.close()
-      selected.delivery.confirmInitialDelivery()
+      selected.confirmDelivery()
       discard application
       return selected.body
 

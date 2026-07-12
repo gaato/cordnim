@@ -52,6 +52,37 @@ type
     postAckSender: ContextResponseSender
     followupsRemaining: Atomic[int]
 
+func exchangeSummary(exchange: InteractionExchange): string =
+  ## Metadata-only rendering that never traverses the retained sender closure,
+  ## the selection/delivery futures, the initial-response claim, or any payload.
+  if exchange.isNil:
+    "InteractionExchange(nil)"
+  else:
+    "InteractionExchange(type: " & $exchange.kindValue & ", state: " &
+      $exchange.responderValue.state() & ")"
+
+func `$`*(exchange: InteractionExchange): string =
+  ## Safe rendering: authority remains unobservable through the exchange.
+  exchange.exchangeSummary()
+
+func repr*(exchange: InteractionExchange): string =
+  ## Safe debug rendering that never reaches the credential-capturing sender.
+  exchange.exchangeSummary()
+
+proc `%`*(exchange: InteractionExchange): JsonNode =
+  ## Serializes only safe metadata; no sender, future, claim, or payload.
+  if exchange.isNil:
+    newJNull()
+  else:
+    %*{
+      "interactionType": $exchange.kindValue,
+      "state": $exchange.responderValue.state()
+    }
+
+proc toJsonHook*(exchange: InteractionExchange): JsonNode =
+  ## Redacts exchanges serialized through `std/jsonutils`.
+  %exchange
+
 func responseErrorMessage(error: InteractionResponseError): string =
   case error
   of ireNone:

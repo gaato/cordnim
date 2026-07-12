@@ -3,7 +3,10 @@ import std/[json, strutils, unittest]
 import chronos
 
 import cordnim/[commands, interactions]
+import cordnim/interactions/webhook_completion {.all.}
 import cordnim/core/errors
+import cordnim/core/ids
+import cordnim/core/secrets
 import cordnim/rest
 
 func bytes(value: string): seq[byte] =
@@ -35,17 +38,23 @@ proc clearObservedRequests() =
 proc body(request: RawRequest): JsonNode =
   parseJson(request.body.bodyBytes().text())
 
+const appId = ApplicationId.toId(200'u64)
+
+proc secretToken(value: string): Secret[InteractionToken] =
+  initSecret[InteractionToken](value)
+
 suite "interaction webhook responses":
-  test "keeps deferred completion compatible":
+  test "edits the original from captured credentials":
     clearObservedRequests()
     proc scenario(): Future[void] {.async.} =
       let client = newChronosRestClient(recordingWebhookTransport)
       client.start()
-      let sink = interactionWebhookCompletion(client)
-      await sink(
-        %*{"application_id": "200", "token": "secret-token"},
-        succeeded("finished")
-      )
+      let sender = interactionWebhookSender(client, appId,
+        secretToken("secret-token"))
+      await sender(ContextResponse(
+        action: raEditOriginal,
+        visibility: vPublic,
+        body: %*{"content": "finished"}))
       await client.stop()
 
     waitFor scenario()
@@ -66,10 +75,8 @@ suite "interaction webhook responses":
     proc scenario(): Future[void] {.async.} =
       let client = newChronosRestClient(recordingWebhookTransport)
       client.start()
-      let sender = interactionWebhookSender(
-        client,
-        %*{"application_id": "200", "token": "secret-token"}
-      )
+      let sender = interactionWebhookSender(client, appId,
+        secretToken("secret-token"))
       await sender(ContextResponse(
         action: raEditOriginal,
         visibility: vEphemeral,
@@ -90,7 +97,7 @@ suite "interaction webhook responses":
     check edit.urlPath.endsWith("/messages/@original")
     check edit.meta.idempotency == idExplicit
     check edit.authRequirement == darNone
-    check edit.body()["flags"].getInt() == 68
+    check edit.body()["flags"].getInt() == 4
     check edit.body()["allowed_mentions"]["parse"].len == 0
 
     let followup = observedRequests[1]
@@ -114,9 +121,8 @@ suite "interaction webhook responses":
       observedResponse = response
       let client = newChronosRestClient(recordingWebhookTransport)
       client.start()
-      let sender = interactionWebhookSender(
-        client,
-        %*{"application_id": "200", "token": "secret-token"})
+      let sender = interactionWebhookSender(client, appId,
+        secretToken("secret-token"))
       try:
         expect DecodeError:
           waitFor sender(ContextResponse(
@@ -126,15 +132,34 @@ suite "interaction webhook responses":
       finally:
         waitFor client.stop()
 
-  test "rejects initial actions before submitting REST":
+  test "does not try to change ephemeral state while editing the original":
     clearObservedRequests()
     proc scenario(): Future[void] {.async.} =
       let client = newChronosRestClient(recordingWebhookTransport)
       client.start()
       let sender = interactionWebhookSender(
-        client,
-        %*{"application_id": "200", "token": "secret-token"}
-      )
+        client, appId, secretToken("secret-token"))
+      var rejected = false
+      try:
+        await sender(ContextResponse(
+          action: raEditOriginal,
+          visibility: vEphemeral,
+          body: %*{"content": "edit", "flags": 64}))
+      except ValueError:
+        rejected = true
+      doAssert rejected
+      await client.stop()
+
+    waitFor scenario()
+    check observedRequests.len == 0
+
+  test "rejects initial actions before submitting REST":
+    clearObservedRequests()
+    proc scenario(): Future[void] {.async.} =
+      let client = newChronosRestClient(recordingWebhookTransport)
+      client.start()
+      let sender = interactionWebhookSender(client, appId,
+        secretToken("secret-token"))
       try:
         await sender(ContextResponse(
           action: raReply,
@@ -152,23 +177,13 @@ suite "interaction webhook responses":
     let client = newChronosRestClient(recordingWebhookTransport)
     expect ValueError:
       discard interactionWebhookSender(
-        ChronosRestClient(nil),
-        %*{"application_id": "200", "token": "secret-token"}
-      )
-    expect ValueError:
-      discard interactionWebhookSender(client, newJObject())
+        ChronosRestClient(nil), appId, secretToken("secret-token"))
     expect ValueError:
       discard interactionWebhookSender(
-        client,
-        %*{"application_id": 200, "token": "secret-token"}
-      )
+        client, ApplicationId.toId(0'u64), secretToken("secret-token"))
     expect ValueError:
-      discard interactionWebhookSender(
-        client,
-        %*{"application_id": "not-an-id", "token": "secret-token"}
-      )
+      discard interactionWebhookSender(client, appId, secretToken(""))
+
+  test "the sender factory rejects a nil client":
     expect ValueError:
-      discard interactionWebhookSender(
-        client,
-        %*{"application_id": "200", "token": ""}
-      )
+      discard interactionWebhookSenderFactory(ChronosRestClient(nil))

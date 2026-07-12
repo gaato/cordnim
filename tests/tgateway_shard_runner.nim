@@ -138,6 +138,19 @@ proc readyEvent(seqNo: int; sessionId, resumeUrl: string): GatewayTransportEvent
 proc dispatchEvent(seqNo: int; name: string): GatewayTransportEvent =
   textEvent("""{"op":0,"s":""" & $seqNo & ""","t":"""" & name & """","d":{}}""")
 
+proc interactionEvent(seqNo: int; token: string): GatewayTransportEvent =
+  textEvent($(%*{
+    "op": 0,
+    "s": seqNo,
+    "t": "INTERACTION_CREATE",
+    "d": {
+      "id": "100",
+      "application_id": "200",
+      "token": token,
+      "type": 1
+    }
+  }))
+
 proc serverHeartbeatEvent(): GatewayTransportEvent =
   textEvent("""{"op":1,"d":null}""")
 proc reconnectEvent(): GatewayTransportEvent = textEvent("""{"op":7,"d":null}""")
@@ -168,6 +181,35 @@ proc handler(probe: Probe): GatewayDispatchHandler =
     probe.receivedAtMs.add event.receivedAtMs
     if probe.target > 0 and probe.processed.len >= probe.target:
       probe.reached.fire()
+
+type InteractionProbe = ref object
+  calls: int
+  payload: JsonNode
+  receivedAtMs: int64
+  reached: AsyncEvent
+  completed: AsyncEvent
+  completedCalls: int
+  gate: AsyncEvent
+  gated: bool
+
+proc newInteractionProbe(): InteractionProbe =
+  InteractionProbe(
+    reached: newAsyncEvent(), completed: newAsyncEvent(), gate: newAsyncEvent())
+
+proc sink(probe: InteractionProbe): GatewayInteractionSink =
+  result = proc(interaction: JsonNode; receivedAtMs: int64): Future[void] {.
+      gcsafe, raises: [].} =
+    proc run(): Future[void] {.async.} =
+      inc probe.calls
+      probe.payload = interaction.copy()
+      probe.receivedAtMs = receivedAtMs
+      probe.reached.fire()
+      if probe.gated:
+        await probe.gate.wait()
+      inc probe.completedCalls
+      probe.completed.fire()
+    {.cast(gcsafe).}:
+      return run()
 
 # --------------------------------------------------------------------------- #
 # Harness.
@@ -202,7 +244,9 @@ proc baseConfig(): GatewayShardRunnerConfig =
 proc newHarness(
     coordination: GatewayCoordination = nil;
     jitter: GatewayJitter = nil;
-    policy = orderedPolicy(16),
+    policy = orderedPolicy(16);
+    interactionSink: GatewayInteractionSink = nil,
+    interactionMaxConcurrent = 4,
 ): Harness =
   let tl = Timeline()
   let probe = newProbe()
@@ -216,7 +260,9 @@ proc newHarness(
   let runner = newGatewayShardRunner(
     baseConfig(), coord, dispatch, driver.asFactory(),
     makeClock(tl), makeSleeper(tl),
-    if jitter.isNil: fullSpanJitter() else: jitter)
+    if jitter.isNil: fullSpanJitter() else: jitter,
+    interactionSink = interactionSink,
+    interactionMaxConcurrent = interactionMaxConcurrent)
   Harness(
     tl: tl, driver: driver, probe: probe, local: local,
     coordination: coord, dispatch: dispatch, runner: runner)
@@ -270,6 +316,11 @@ block config_validation_is_enforced:
     discard build(proc(c: var GatewayShardRunnerConfig) = c.helloTimeoutMs = 0)
   doAssertRaises GatewayUrlError: # bad initial URL
     discard build(proc(c: var GatewayShardRunnerConfig) = c.initialUrl = "http://x/")
+  doAssertRaises ValueError: # non-positive interaction concurrency
+    discard newGatewayShardRunner(
+      baseConfig(), local.asCoordination(), dispatch, driver.asFactory(),
+      makeClock(tl), makeSleeper(tl), fullSpanJitter(),
+      interactionMaxConcurrent = 0)
 
 block identify_ready_checkpoint_and_autostart:
   let h = newHarness()
@@ -301,6 +352,107 @@ block identify_ready_checkpoint_and_autostart:
   # No sleeper or receive is left pending after teardown.
   doAssert h.tl.pendingSleeps == 0
   doAssert not h.driver.receiveActive
+
+block interactions_bypass_the_generic_feed_with_and_without_a_sink:
+  const sentinel = "RUNNER_INTERACTION_SECRET"
+
+  block with_sink:
+    let interactionProbe = newInteractionProbe()
+    let h = newHarness(interactionSink = interactionProbe.sink())
+    h.probe.target = 1
+    let runFut = h.runner.run()
+    discard h.handshakeAfterHello(45_000)
+    h.driver.push(readyEvent(1, "sess-i", "wss://resume.example/"))
+    waitFor h.probe.reached.wait()
+    h.tl.advance(25)
+    h.driver.push(interactionEvent(2, sentinel))
+    waitFor interactionProbe.reached.wait()
+    doAssert interactionProbe.calls == 1
+    doAssert interactionProbe.payload["token"].getStr() == sentinel
+    doAssert interactionProbe.receivedAtMs == 25
+    doAssert h.probe.processed == @["READY"]
+    doAssert h.runner.sessionSnapshot.sequence.get().toInt64() == 2
+    waitFor h.runner.close()
+    waitFor runFut
+
+  block without_sink:
+    let h = newHarness()
+    h.probe.target = 1
+    let runFut = h.runner.run()
+    discard h.handshakeAfterHello(45_000)
+    h.driver.push(readyEvent(1, "sess-j", "wss://resume.example/"))
+    waitFor h.probe.reached.wait()
+    h.driver.push(interactionEvent(2, sentinel))
+    doAssert h.pumpUntil(proc(): bool {.raises: [].} =
+      h.runner.sessionSnapshot.sequence.isSome and
+        h.runner.sessionSnapshot.sequence.get().toInt64() == 2)
+    doAssert h.probe.processed == @["READY"]
+    waitFor h.runner.close()
+    waitFor runFut
+
+block admitted_interaction_survives_connection_replacement:
+  let interactionProbe = newInteractionProbe()
+  interactionProbe.gated = true
+  let h = newHarness(interactionSink = interactionProbe.sink())
+  h.probe.target = 1
+  let runFut = h.runner.run()
+  discard h.handshakeAfterHello(45_000)
+  h.driver.push(readyEvent(1, "sess-k", "wss://resume.example/"))
+  waitFor h.probe.reached.wait()
+  h.driver.push(interactionEvent(2, "PERSISTENT_INTERACTION_SECRET"))
+  waitFor interactionProbe.reached.wait()
+  h.driver.push(reconnectEvent())
+  h.driver.push(helloEvent(45_000))
+  let resume = parseJson(h.pumpUntilSent())
+  doAssert resume["op"].getInt() == 6
+  interactionProbe.gate.fire()
+  waitFor interactionProbe.completed.wait()
+  doAssert interactionProbe.calls == 1
+  waitFor h.runner.close()
+  waitFor runFut
+
+block slow_interaction_does_not_age_the_next_ack_in_the_queue:
+  let interactionProbe = newInteractionProbe()
+  interactionProbe.gated = true
+  let h = newHarness(interactionSink = interactionProbe.sink())
+  h.probe.target = 1
+  let runFut = h.runner.run()
+  discard h.handshakeAfterHello(45_000)
+  h.driver.push(readyEvent(1, "sess-concurrent", "wss://resume.example/"))
+  waitFor h.probe.reached.wait()
+  h.driver.push(interactionEvent(2, "SLOW_A"))
+  h.driver.push(interactionEvent(3, "PROMPT_B"))
+  doAssert h.pumpUntil(
+    proc(): bool {.raises: [].} = interactionProbe.calls == 2)
+  doAssert h.runner.sessionSnapshot.sequence.get().toInt64() == 3
+  interactionProbe.gate.fire()
+  doAssert h.pumpUntil(
+    proc(): bool {.raises: [].} = interactionProbe.completedCalls == 2)
+  waitFor h.runner.close()
+  waitFor runFut
+
+block interaction_queue_overload_preserves_the_last_admitted_cursor:
+  let interactionProbe = newInteractionProbe()
+  interactionProbe.gated = true
+  let h = newHarness(
+    policy = orderedPolicy(1), interactionSink = interactionProbe.sink(),
+    interactionMaxConcurrent = 1)
+  h.probe.target = 1
+  let runFut = h.runner.run()
+  discard h.handshakeAfterHello(45_000)
+  h.driver.push(readyEvent(1, "sess-l", "wss://resume.example/"))
+  waitFor h.probe.reached.wait()
+  let abortsBefore = h.driver.abortCount
+  h.driver.push(interactionEvent(2, "A"))
+  waitFor interactionProbe.reached.wait()
+  h.driver.push(interactionEvent(3, "B"))
+  h.driver.push(interactionEvent(4, "C"))
+  doAssert h.pumpUntil(
+    proc(): bool {.raises: [].} = h.driver.abortCount > abortsBefore)
+  doAssert h.runner.sessionSnapshot.sequence.get().toInt64() <= 3
+  interactionProbe.gate.fire()
+  waitFor h.runner.close()
+  waitFor runFut
 
 block resume_uses_stored_session_and_resume_url:
   # Seed a resumable session under a lease, release it, then a fresh runner must

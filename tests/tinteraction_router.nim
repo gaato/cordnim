@@ -5,8 +5,11 @@ import chronos
 import cordnim/[app, commands, components, interactions]
 import cordnim/core/[bits, ids, permissions]
 import cordnim/core/errors
+import cordnim/core/secrets
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
+import cordnim/interactions/envelope {.all.}
+import cordnim/interactions/router {.all.}
 
 type RouterServices = object
 
@@ -14,6 +17,30 @@ var cancellationProbeStarted: Atomic[bool]
 var cancellationProbeStopped: Atomic[bool]
 var invalidResponseProbeStopped: Atomic[bool]
 var restrictedHandlerCalled: Atomic[bool]
+
+proc recordingSenderFactory(
+    onSend: proc(response: ContextResponse) {.gcsafe, raises: [].}):
+    InteractionSenderFactory =
+  ## Builds a factory whose sender records each post-acknowledgement response.
+  result = proc(applicationId: ApplicationId,
+                token: Secret[InteractionToken]): ContextResponseSender
+                {.gcsafe, raises: [].} =
+    result = proc(response: ContextResponse): Future[void]
+        {.gcsafe, raises: [].} =
+      onSend(response)
+      result = newFuture[void]("test.recording.sender")
+      result.complete()
+
+proc failingSenderFactory(): InteractionSenderFactory =
+  ## Builds a factory whose sender always fails with a redacted transport error.
+  result = proc(applicationId: ApplicationId,
+                token: Secret[InteractionToken]): ContextResponseSender
+                {.gcsafe, raises: [].} =
+    result = proc(response: ContextResponse): Future[void]
+        {.gcsafe, raises: [].} =
+      result = newFuture[void]("test.failing.sender")
+      result.fail(newException(ValueError,
+        "transport detail must stay redacted"))
 
 proc greet(ctx: CommandCtx[RouterServices], name: string):
     Future[CommandResult]
@@ -345,19 +372,16 @@ suite "shared interaction router":
   test "auto-defer returns promptly and retains the completion task":
     var completed: Atomic[bool]
     completed.store(false)
-    proc sink(interaction: JsonNode,
-              commandResult: CommandResult): Future[void]
-              {.gcsafe, raises: [].} =
-      doAssert commandResult.message == "finished"
+    proc onSend(response: ContextResponse) {.gcsafe, raises: [].} =
+      doAssert response.action == raEditOriginal
+      doAssert response.body{"content"}.getStr() == "finished"
       completed.store(true)
-      let future = newFuture[void]("test.completion.sink")
-      future.complete()
-      future
 
     proc scenario(): Future[JsonNode] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(slow))
-      let router = newCommandRouter(application, sink)
+      let router = newCommandRouterWithSenderFactory(
+        application, recordingSenderFactory(onSend))
       let response = await router.route(slowPayload(), monotonicMillis())
       await sleepAsync(20.milliseconds)
       await router.close()
@@ -370,19 +394,16 @@ suite "shared interaction router":
   test "HTTP auto-defer completion waits for confirmed socket delivery":
     var completed: Atomic[bool]
     completed.store(false)
-    proc sink(interaction: JsonNode,
-              commandResult: CommandResult): Future[void]
-              {.gcsafe, raises: [].} =
-      doAssert interaction{"id"}.getStr() == "100"
-      doAssert commandResult.message == "finished"
+    proc onSend(response: ContextResponse) {.gcsafe, raises: [].} =
+      doAssert response.action == raEditOriginal
+      doAssert response.body{"content"}.getStr() == "finished"
       completed.store(true)
-      result = newFuture[void]("test.delivery-gated-completion")
-      result.complete()
 
     proc scenario(): Future[InteractionHttpResponse] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(slow))
-      let router = newCommandRouter(application, sink)
+      let router = newCommandRouterWithSenderFactory(
+        application, recordingSenderFactory(onSend))
       let handler = router.asHttpHandler()
       let response = await handler(slowPayload().jsonBytes(), monotonicMillis())
       await sleepAsync(20.milliseconds)
@@ -402,20 +423,16 @@ suite "shared interaction router":
   test "auto-defer clamps itself to the remaining acknowledgement budget":
     var completed: Atomic[bool]
     completed.store(false)
-    proc sink(interaction: JsonNode,
-              commandResult: CommandResult): Future[void]
-              {.gcsafe, raises: [].} =
-      discard interaction
-      doAssert commandResult.message == "Hello Nim"
+    proc onSend(response: ContextResponse) {.gcsafe, raises: [].} =
+      doAssert response.action == raEditOriginal
+      doAssert response.body{"content"}.getStr() == "Hello Nim"
       completed.store(true)
-      let future = newFuture[void]("test.late-ingress.sink")
-      future.complete()
-      future
 
     proc scenario(): Future[JsonNode] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(greet))
-      let router = newCommandRouter(application, sink)
+      let router = newCommandRouterWithSenderFactory(
+        application, recordingSenderFactory(onSend))
       let response = await router.route(
         payload(), monotonicMillis() + -2_850'i64)
       await sleepAsync(5.milliseconds)
@@ -455,14 +472,6 @@ suite "shared interaction router":
   test "deferred completion failures reach the redacted observer":
     var observed: Atomic[int]
     observed.store(0)
-    proc failingSink(interaction: JsonNode,
-                     commandResult: CommandResult): Future[void]
-                     {.gcsafe, raises: [].} =
-      discard interaction
-      discard commandResult
-      result = newFuture[void]("test.failing-completion.sink")
-      result.fail(newException(ValueError,
-        "transport detail must stay redacted"))
     proc observer(kind: DeferredFailureKind,
                   interactionId: Option[InteractionId])
                   {.gcsafe, raises: [].} =
@@ -472,7 +481,8 @@ suite "shared interaction router":
     proc scenario(): Future[JsonNode] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(slow))
-      let router = newCommandRouter(application, failingSink, observer)
+      let router = newCommandRouterWithSenderFactory(
+        application, failingSenderFactory(), observer)
       let response = await router.route(slowPayload(), monotonicMillis())
       await sleepAsync(20.milliseconds)
       await router.close()
@@ -592,20 +602,16 @@ suite "shared interaction router":
   test "HTTP post-ACK work waits for the socket delivery receipt":
     var edits: Atomic[int]
     edits.store(0)
-    proc postAck(interaction: JsonNode,
-                 response: ContextResponse): Future[void]
-                 {.gcsafe, raises: [].} =
-      doAssert interaction{"id"}.getStr() == "100"
+    proc onSend(response: ContextResponse) {.gcsafe, raises: [].} =
       doAssert response.action == raEditOriginal
       doAssert response.body{"content"}.getStr() == "delivered first"
       edits.store(edits.load() + 1)
-      result = newFuture[void]("test.post-ack")
-      result.complete()
 
     proc scenario(): Future[InteractionHttpResponse] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(contextDefer))
-      let router = newCommandRouter(application, postAckSink = postAck)
+      let router = newCommandRouterWithSenderFactory(
+        application, recordingSenderFactory(onSend))
       let handler = router.asHttpHandler()
       let response = await handler(
         contextDeferPayload().jsonBytes(), monotonicMillis())

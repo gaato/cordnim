@@ -21,7 +21,10 @@ import cordnim/components/[forms, routes, typed_routes]
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import cordnim/runtime/task_scope
-import ./[context, dispatch_core, exchange, responder, response_codec, router]
+import ./[context, exchange, responder,
+  response_codec, router]
+import ./dispatch_core {.all.}
+import ./envelope {.all.}
 
 type
   ComponentRouteDispatchError* = object of CatchableError ## Malformed,
@@ -44,7 +47,9 @@ type
     componentType*: int ## Raw Discord component type number.
     values*: seq[string] ## Select values, empty for buttons.
     resolved*: JsonNode ## Lossless resolved entity maps.
-    raw*: JsonNode ## Complete interaction for raw escape hatches.
+    snapshot*: InteractionSnapshot ## Token-free view of the interaction. Its
+      ## `rawJson` returns an owned, redacted copy, replacing the former raw
+      ## interaction escape hatch that exposed the credential.
 
   ComponentCtx*[S] = object ## Typed application services, a response context,
     ## and verified component invocation metadata.
@@ -68,8 +73,40 @@ type
     envelopeValue: RouteCodec ## Shared HMAC verification and rotation config.
     handlers: Table[uint16, ErasedComponentHandler[S]]
     tasks: TaskScope ## Owns retained post-acknowledgement handler tails.
-    postAckSink: PostAckResponseSink ## Original-message edit and follow-up I/O.
+    senderFactory: InteractionSenderFactory ## Builds one envelope-owned
+      ## post-acknowledgement sender per interaction; no payload is retained.
     failureObserver: RetainedFailureObserver ## Redacted background-failure sink.
+
+func `$`*(invocation: ComponentInvocation): string =
+  ## Metadata-only rendering; values, resolved entities, and snapshot raw JSON
+  ## are deliberately excluded.
+  "ComponentInvocation(type: " & $invocation.componentType &
+    ", " & $invocation.snapshot & ")"
+
+func repr*(invocation: ComponentInvocation): string =
+  $invocation
+
+proc `%`*(invocation: ComponentInvocation): JsonNode =
+  %*{
+    "componentType": invocation.componentType,
+    "interaction": %invocation.snapshot
+  }
+
+proc toJsonHook*(invocation: ComponentInvocation): JsonNode =
+  %invocation
+
+func `$`*[S](context: ComponentCtx[S]): string =
+  ## Never traverses application services or response authority.
+  "ComponentCtx(invocation: " & $context.invocationValue & ")"
+
+func repr*[S](context: ComponentCtx[S]): string =
+  $context
+
+proc `%`*[S](context: ComponentCtx[S]): JsonNode =
+  %*{"invocation": %context.invocationValue}
+
+proc toJsonHook*[S](context: ComponentCtx[S]): JsonNode =
+  %context
 
 proc replyComponent*(data: sink JsonNode): ComponentResponse =
   ## Creates a new-message response to a component activation.
@@ -150,16 +187,17 @@ func envelope*[S](router: ComponentRouter[S]): RouteCodec =
   ## Returns the shared signing envelope so a modal router can reuse the ring.
   router.envelopeValue
 
-proc newComponentRouter*[S](services: ref S, envelope: sink RouteCodec,
-                            postAckSink: PostAckResponseSink = nil,
-                            failureObserver: RetainedFailureObserver = nil):
-                            ComponentRouter[S] =
+proc newComponentRouterWithSenderFactory[S](
+    services: ref S, envelope: sink RouteCodec,
+    senderFactory: InteractionSenderFactory,
+    failureObserver: RetainedFailureObserver = nil): ComponentRouter[S] =
   ## Creates an empty persistent router around one signing-key ring.
   ##
   ## `services` is the application-owned allocation, held by reference so
-  ## handlers observe exactly the services the application owns. `postAckSink`
-  ## carries original-message edits and follow-ups; `failureObserver` receives a
-  ## redacted correlation ID if a retained handler tail fails after delivery.
+  ## handlers observe exactly the services the application owns. `senderFactory`
+  ## builds each interaction's original-message edit and follow-up sender from the
+  ## ingress envelope's credentials; `failureObserver` receives a redacted
+  ## correlation ID if a retained handler tail fails after delivery.
   if services.isNil:
     raise newException(ValueError, "component router requires app services")
   if envelope.signer.isNil:
@@ -169,9 +207,16 @@ proc newComponentRouter*[S](services: ref S, envelope: sink RouteCodec,
     envelopeValue: envelope,
     handlers: initTable[uint16, ErasedComponentHandler[S]](),
     tasks: newTaskScope(),
-    postAckSink: postAckSink,
+    senderFactory: senderFactory,
     failureObserver: failureObserver
   )
+
+proc newComponentRouter*[S](services: ref S, envelope: sink RouteCodec,
+                            failureObserver: RetainedFailureObserver = nil):
+                            ComponentRouter[S] =
+  ## Creates a credential-blind router for direct tests and custom selection.
+  newComponentRouterWithSenderFactory(
+    services, envelope, nil, failureObserver)
 
 proc register*[S, T](router: ComponentRouter[S], codec: TypedRouteCodec[T],
                      handler: ComponentHandler[S, T]) =
@@ -248,7 +293,6 @@ proc decodeInvocation(interaction: JsonNode): ComponentInvocation =
 
   result.context = interaction.invocationContext()
   result.componentType = data["component_type"].getInt()
-  result.raw = interaction
   result.resolved = if data.hasKey("resolved"):
     data["resolved"]
   else:
@@ -263,29 +307,24 @@ proc decodeInvocation(interaction: JsonNode): ComponentInvocation =
           "component values must be strings")
       result.values.add(value.getStr())
 
-proc postAckSender[S](router: ComponentRouter[S],
-                      interaction: JsonNode): ContextResponseSender =
-  result = proc(response: ContextResponse): Future[void] {.
-      closure, gcsafe, raises: [CatchableError].} =
-    if router.postAckSink.isNil:
-      raise newException(InteractionExchangeError,
-        "component post-acknowledgement transport is not configured")
-    {.cast(gcsafe).}:
-      return router.postAckSink(interaction, response)
-
-proc selectResponse*[S](router: ComponentRouter[S], interaction: JsonNode,
+proc selectResponse[S](router: ComponentRouter[S],
+                        ingress: InteractionEnvelope,
                         nowUnixSeconds: int64, receivedAt: MonoMillis):
                         Future[SelectedResponse] {.async.} =
   ## Authenticates, decodes, and dispatches a component activation.
   ##
-  ## Returns the selected callback body and the exchange that owns delivery
-  ## authority; the calling adapter confirms delivery only after its own write
-  ## succeeds. `nowUnixSeconds` bounds route expiry; `receivedAt` anchors the
-  ## acknowledgement deadline.
+  ## The ingress envelope owns the credentials and the preconstructed sender.
+  ## Decoding runs over its token-free copy; the handler receives only a
+  ## token-free `InteractionSnapshot`. Returns the selected callback body and the
+  ## exchange that owns delivery authority; the calling adapter confirms delivery
+  ## only after its own write succeeds. `nowUnixSeconds` bounds route expiry;
+  ## `receivedAt` anchors the acknowledgement deadline.
   if router.isNil:
     raise newException(ValueError, "component router is nil")
-  let invocation = interaction.decodeInvocation()
-  let data = interaction["data"]
+  let decoding = ingress.decodingJson()
+  var invocation = decoding.decodeInvocation()
+  invocation.snapshot = ingress.snapshot()
+  let data = decoding["data"]
   if not data.hasKey("custom_id") or data["custom_id"].kind != JString:
     raise newException(ComponentRouteDispatchError,
       "component custom_id is missing")
@@ -304,16 +343,25 @@ proc selectResponse*[S](router: ComponentRouter[S], interaction: JsonNode,
     invocation.context.responsePolicy,
     responder,
     invocation.context.followupBudget,
-    router.postAckSender(interaction))
+    ingress.postAckSender())
   let responseContext = appcontext.newContext(exchange)
   let apply = router.handlers[decoded.envelope.routeTypeId](
     router.services, exchange, responseContext, invocation, decoded.envelope)
   return await pumpApplication(exchange, responder, apply, router.tasks,
-    router.failureObserver, interaction.observedInteractionId())
+    router.failureObserver, ingress.observedInteractionId())
 
-proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
+proc selectResponse[S](router: ComponentRouter[S], interaction: JsonNode,
+                        nowUnixSeconds: int64, receivedAt: MonoMillis):
+                        Future[SelectedResponse] {.async.} =
+  ## Forms the ingress envelope for a verified payload, then dispatches it.
+  return await router.selectResponse(
+    looseInteractionEnvelope(interaction, router.senderFactory),
+    nowUnixSeconds, receivedAt)
+
+proc route[S](router: ComponentRouter[S], interaction: JsonNode,
                nowUnixSeconds: int64,
-               receivedAt = monotonicMillis()): Future[JsonNode] {.async.} =
+               receivedAt = monotonicMillis()): Future[JsonNode] {.
+               used, async.} =
   ## Authenticates, dispatches, and serializes one component callback.
   ##
   ## This result-returning convenience confirms delivery locally and returns the
@@ -321,7 +369,7 @@ proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
   ## delivery only after the transport write succeeds.
   let selected = await router.selectResponse(
     interaction, nowUnixSeconds, receivedAt)
-  selected.delivery.confirmInitialDelivery()
+  selected.confirmDelivery()
   return selected.body
 
 proc close*[S](router: ComponentRouter[S]): Future[void] {.

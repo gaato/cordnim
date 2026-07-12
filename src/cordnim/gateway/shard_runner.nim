@@ -46,7 +46,7 @@ type
     shardId*: ShardId ## Shard the failure belongs to.
     reason*: string ## Stable reason; never payload, token, or backend text.
   GatewayShardErrorObserver* = proc(context: GatewayShardErrorContext) {.
-    gcsafe, raises: [].} ## Sink for terminal shard failures.
+    gcsafe, raises: [].} ## Sink for shard and interaction-worker failures.
 
   GatewayShardRunnerConfig* = object ## Static, non-injected shard parameters.
     shardId*: ShardId ## Shard this runner owns.
@@ -59,6 +59,15 @@ type
     helloTimeoutMs*: int64 ## Bound within which HELLO must arrive.
     leaseRenewIntervalMs*: int64 ## Interval between lease renew/checkpoint.
     reconnectBackoffMs*: int64 ## Base backoff before a reconnect attempt.
+
+  GatewayInteractionSink* = proc(interaction: JsonNode; receivedAtMs: int64):
+      Future[void] {.gcsafe, raises: [].}
+    ## Direct ingress for `INTERACTION_CREATE`. The runner admits an owned copy to
+    ## a bounded runner-lifetime queue. It never constructs a public DispatchEvent.
+
+  InteractionDispatchEnvelope = object ## Runner-owned queued interaction.
+    interaction: JsonNode
+    receivedAtMs: int64
 
   ConnectionOutcome = enum ## What to do after a connection ends.
     ocResume, ## Reconnect and RESUME from the last accepted cursor.
@@ -77,6 +86,11 @@ type
     config: GatewayShardRunnerConfig
     coordination: GatewayCoordination
     dispatch: GatewayDispatchRuntime
+    interactionSink: GatewayInteractionSink ## Optional direct interaction ingress.
+    interactionMaxConcurrent: int
+      ## Independent worker bound for acknowledgement-deadline-sensitive work.
+    interactionQueue: AsyncQueue[InteractionDispatchEnvelope]
+      ## Bounded runner-lifetime queue; never owned by a connection scope.
     transportFactory: GatewayTransportFactory
     clock: GatewayClock
     sleeper: GatewaySleeper
@@ -126,9 +140,16 @@ proc newGatewayShardRunner*(
     clock: GatewayClock;
     sleeper: GatewaySleeper;
     jitter: GatewayJitter;
-    errorObserver: GatewayShardErrorObserver = nil,
+    errorObserver: GatewayShardErrorObserver = nil;
+    interactionSink: GatewayInteractionSink = nil,
+    interactionMaxConcurrent: int = 4,
 ): GatewayShardRunner {.raises: [ValueError, GatewayUrlError].} =
   ## Builds a stopped runner, validating injected dependencies and the URL once.
+  ##
+  ## `INTERACTION_CREATE` never enters the generic dispatch runtime. With a sink,
+  ## it is queued before the resume cursor advances. Without one, it is ignored.
+  ## `interactionMaxConcurrent` bounds independent sink calls so one slow
+  ## acknowledgement cannot head-of-line block every later interaction.
   if coordination.isNil or dispatch.isNil or transportFactory.isNil or
       clock.isNil or sleeper.isNil or jitter.isNil:
     raise newException(
@@ -144,10 +165,15 @@ proc newGatewayShardRunner*(
   if config.shardId.toUint16 >= config.totalShards:
     raise newException(
       ValueError, "shard id must be less than the total shard count")
-  GatewayShardRunner(
+  if interactionMaxConcurrent <= 0:
+    raise newException(
+      ValueError, "interaction concurrency must be positive")
+  result = GatewayShardRunner(
     config: config,
     coordination: coordination,
     dispatch: dispatch,
+    interactionSink: interactionSink,
+    interactionMaxConcurrent: interactionMaxConcurrent,
     transportFactory: transportFactory,
     clock: clock,
     sleeper: sleeper,
@@ -161,6 +187,9 @@ proc newGatewayShardRunner*(
     shutdownComplete: newAsyncEvent(),
     lifecyclePhase: shardStopped,
   )
+  if not interactionSink.isNil:
+    result.interactionQueue = newAsyncQueue[InteractionDispatchEnvelope](
+      max(1, dispatch.aggregateQueueCapacity()))
 
 proc fail(runner: GatewayShardRunner; reason: string) {.raises: [].} =
   ## Marks the run fatal with a stable reason and unblocks it. First reason wins.
@@ -171,6 +200,31 @@ proc fail(runner: GatewayShardRunner; reason: string) {.raises: [].} =
       runner.observer(GatewayShardErrorContext(
         shardId: runner.config.shardId, reason: reason))
   runner.abortEvent.fire()
+
+proc reportInteractionFailure(runner: GatewayShardRunner) {.raises: [].} =
+  ## Reports stable metadata only; handler exceptions can contain interaction data.
+  if not runner.observer.isNil:
+    runner.observer(GatewayShardErrorContext(
+      shardId: runner.config.shardId,
+      reason: "interaction handler failed"))
+
+proc runInteractionQueue(runner: GatewayShardRunner) {.
+    async: (raises: []).} =
+  ## Drains admitted interactions for the runner lifetime, across reconnects.
+  while true:
+    var queued: InteractionDispatchEnvelope
+    try:
+      queued = await runner.interactionQueue.get()
+    except CancelledError:
+      break
+    try:
+      await runner.interactionSink(queued.interaction, queued.receivedAtMs)
+    except CancelledError:
+      if runner.closing:
+        break
+      runner.reportInteractionFailure()
+    except CatchableError:
+      runner.reportInteractionFailure()
 
 proc finish(
     state: ConnectionState; outcome: ConnectionOutcome) {.raises: [].} =
@@ -431,6 +485,27 @@ proc handleDispatch(
     state.finish(ocTerminal)
     return false
   let eventName = dispatch.eventName.toString()
+
+  if eventName == "INTERACTION_CREATE":
+    # This branch is unconditional: an interaction never becomes a public
+    # DispatchEvent, even when no high-level interaction runtime is attached.
+    # Without a sink it is deliberately ignored. With a sink, admission moves an
+    # owned copy to a bounded runner-lifetime queue before the resume cursor moves.
+    if runner.interactionSink.isNil:
+      discard runner.session.observeSequence(dispatch.sequence)
+      return true
+    let receivedAt = runner.clock()
+    try:
+      runner.interactionQueue.putNoWait(InteractionDispatchEnvelope(
+        interaction: dispatch.data.copy(), receivedAtMs: receivedAt))
+    except AsyncQueueFullError:
+      # Resume from the last admitted sequence. The event was not accepted and
+      # can be replayed without duplicating an admitted handler execution.
+      state.finish(ocResume)
+      return false
+    discard runner.session.observeSequence(dispatch.sequence)
+    return true
+
   var event: DispatchEvent
   try:
     event = initDispatchEvent(
@@ -1069,6 +1144,15 @@ proc runLoop(runner: GatewayShardRunner) {.
     # The runner owns the dispatch runtime and starts it exactly once, before any
     # event is submitted, so a dispatch can never observe `dispatchNotStarted`.
     runner.dispatch.start()
+    if not runner.interactionSink.isNil:
+      # Interaction acknowledgement deadlines are independent of generic event
+      # ordering. A dedicated bounded pool prevents one slow handler from aging
+      # every later interaction while preserving runner-lifetime ownership.
+      for _ in 0 ..< runner.interactionMaxConcurrent:
+        try:
+          discard runner.runScope.spawn(runner.runInteractionQueue())
+        except ValueError:
+          discard # the scope is fresh and only shutdown can close it here
     if not await runner.acquireLease():
       if runner.fatal and not runner.closing:
         raise newException(GatewayShardRunnerError, runner.fatalReason)

@@ -112,6 +112,51 @@ type
     of GatewayPayloadKind.Other:
       other*: GatewayOtherPayload ## Lossless unrecognized projection.
 
+func dispatchSummary(payload: GatewayDispatchPayload): string =
+  ## Deliberately excludes raw data and unknown fields.
+  "GatewayDispatchPayload(event: " & string(payload.eventName) &
+    ", sequence: " & $payload.sequence.toInt64() & ")"
+
+func `$`*(payload: GatewayDispatchPayload): string =
+  ## Safe diagnostics for a dispatch envelope; never traverses its data.
+  payload.dispatchSummary()
+
+func repr*(payload: GatewayDispatchPayload): string =
+  ## Safe debug diagnostics for a dispatch envelope.
+  payload.dispatchSummary()
+
+proc `%`*(payload: GatewayDispatchPayload): JsonNode =
+  ## Serializes safe routing metadata, not the credential-bearing wire value.
+  %*{
+    "eventName": string(payload.eventName),
+    "sequence": payload.sequence.toInt64()
+  }
+
+proc toJsonHook*(payload: GatewayDispatchPayload): JsonNode =
+  ## Redacts dispatch payloads serialized through std/jsonutils.
+  %payload
+
+func `$`*(payload: GatewayPayload): string =
+  ## Safe lifecycle diagnostics; raw and unknown payload data stay opaque.
+  if payload.kind == GatewayPayloadKind.Dispatch:
+    "GatewayPayload(" & $payload.dispatch & ")"
+  else:
+    "GatewayPayload(kind: " & $payload.kind & ")"
+
+func repr*(payload: GatewayPayload): string =
+  ## Safe debug diagnostics for the lifecycle wrapper.
+  $payload
+
+proc `%`*(payload: GatewayPayload): JsonNode =
+  ## Serializes only the kind and safe dispatch metadata.
+  result = %*{"kind": $payload.kind}
+  if payload.kind == GatewayPayloadKind.Dispatch:
+    result["dispatch"] = %payload.dispatch
+
+proc toJsonHook*(payload: GatewayPayload): JsonNode =
+  ## Redacts lifecycle wrappers serialized through std/jsonutils.
+  %payload
+
 func `==`*(left, right: GatewaySessionId): bool {.borrow.}
   ## Compares Gateway session identifiers.
 

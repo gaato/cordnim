@@ -22,7 +22,10 @@ import cordnim/components/[routes, typed_routes]
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import cordnim/runtime/task_scope
-import ./[component_router, context, dispatch_core, exchange, responder, router]
+import ./[component_router, context, exchange,
+  responder, router]
+import ./dispatch_core {.all.}
+import ./envelope {.all.}
 
 export ComponentResponse, ComponentResponseKind, replyComponent, updateComponent,
   respondedViaContext
@@ -39,7 +42,9 @@ type
     context*: InvocationContext ## Installation owner and effective permissions.
     origin*: ModalOrigin ## Whether update-style callbacks are legal.
     resolved*: JsonNode ## Lossless resolved-entity maps from submit data.
-    raw*: JsonNode ## Complete interaction for raw escape hatches.
+    snapshot*: InteractionSnapshot ## Token-free view of the interaction. Its
+      ## `rawJson` returns an owned, redacted copy, replacing the former raw
+      ## interaction escape hatch that exposed the credential.
 
   ModalCtx*[S] = object ## Typed application services, a response context, and
     ## verified modal submission metadata.
@@ -70,22 +75,53 @@ type
     handlers: Table[uint16, ErasedModalHandler[S]]
     hooks: ModalDecodeHooks ## Resolved-entity decode extension points.
     tasks: TaskScope ## Owns retained post-acknowledgement handler tails.
-    postAckSink: PostAckResponseSink ## Original-message edit and follow-up I/O.
+    senderFactory: InteractionSenderFactory ## Builds one envelope-owned
+      ## post-acknowledgement sender per interaction; no payload is retained.
     failureObserver: RetainedFailureObserver ## Redacted background-failure sink.
+
+func `$`*(invocation: ModalInvocation): string =
+  ## Metadata-only rendering; submitted values and snapshot raw JSON stay opaque.
+  "ModalInvocation(origin: " & $invocation.origin &
+    ", " & $invocation.snapshot & ")"
+
+func repr*(invocation: ModalInvocation): string =
+  $invocation
+
+proc `%`*(invocation: ModalInvocation): JsonNode =
+  %*{"origin": $invocation.origin, "interaction": %invocation.snapshot}
+
+proc toJsonHook*(invocation: ModalInvocation): JsonNode =
+  %invocation
+
+func `$`*[S](context: ModalCtx[S]): string =
+  ## Never traverses application services or response authority.
+  "ModalCtx(invocation: " & $context.invocationValue & ")"
+
+func repr*[S](context: ModalCtx[S]): string =
+  $context
+
+proc `%`*[S](context: ModalCtx[S]): JsonNode =
+  %*{"invocation": %context.invocationValue}
+
+proc toJsonHook*[S](context: ModalCtx[S]): JsonNode =
+  %context
 
 func envelope*[S](router: ModalRouter[S]): RouteCodec =
   ## Returns the shared signing envelope.
   router.envelopeValue
 
-proc newModalRouter*[S](services: ref S, envelope: sink RouteCodec,
-                        postAckSink: PostAckResponseSink = nil,
-                        failureObserver: RetainedFailureObserver = nil,
-                        hooks = initModalDecodeHooks()): ModalRouter[S] =
+proc newModalRouterWithSenderFactory[S](
+    services: ref S, envelope: sink RouteCodec,
+    senderFactory: InteractionSenderFactory,
+    failureObserver: RetainedFailureObserver = nil,
+    hooks = initModalDecodeHooks()): ModalRouter[S] =
   ## Creates an empty modal router around one signing-key ring.
   ##
   ## Reusing the component router's `envelope` keeps one signing scheme for both
   ## component and modal routes. `services` is the app-owned allocation, held by
   ## reference so handlers observe exactly the services the application owns.
+  ## `senderFactory` builds each interaction's post-acknowledgement sender from
+  ## the ingress envelope's credentials.
   if services.isNil:
     raise newException(ValueError, "modal router requires app services")
   if envelope.signer.isNil:
@@ -96,9 +132,16 @@ proc newModalRouter*[S](services: ref S, envelope: sink RouteCodec,
     handlers: initTable[uint16, ErasedModalHandler[S]](),
     hooks: hooks,
     tasks: newTaskScope(),
-    postAckSink: postAckSink,
+    senderFactory: senderFactory,
     failureObserver: failureObserver
   )
+
+proc newModalRouter*[S](services: ref S, envelope: sink RouteCodec,
+                        failureObserver: RetainedFailureObserver = nil,
+                        hooks = initModalDecodeHooks()): ModalRouter[S] =
+  ## Creates a credential-blind router for direct tests and custom selection.
+  newModalRouterWithSenderFactory(
+    services, envelope, nil, failureObserver, hooks)
 
 proc stripRedundantWrongModal[F](decoded: var ModalDecodeResult[F]) =
   # The signed route type already authenticated the modal identity, so a derived
@@ -207,30 +250,22 @@ proc decodeInvocation(interaction: JsonNode):
   result.invocation = ModalInvocation(
     context: interaction.invocationContext(),
     origin: origin,
-    resolved: if data.hasKey("resolved"): data["resolved"] else: newJObject(),
-    raw: interaction)
+    resolved: if data.hasKey("resolved"): data["resolved"] else: newJObject())
 
-proc postAckSender[S](router: ModalRouter[S],
-                      interaction: JsonNode): ContextResponseSender =
-  result = proc(response: ContextResponse): Future[void] {.
-      closure, gcsafe, raises: [CatchableError].} =
-    if router.postAckSink.isNil:
-      raise newException(InteractionExchangeError,
-        "modal post-acknowledgement transport is not configured")
-    {.cast(gcsafe).}:
-      return router.postAckSink(interaction, response)
-
-proc selectResponse*[S](router: ModalRouter[S], interaction: JsonNode,
+proc selectResponse[S](router: ModalRouter[S], ingress: InteractionEnvelope,
                         nowUnixSeconds: int64, receivedAt: MonoMillis):
                         Future[SelectedResponse] {.async.} =
   ## Authenticates, decodes, and dispatches a modal submission.
   ##
-  ## Authentication of the signed route runs before submission decoding. Returns
-  ## the selected callback body and the exchange that owns delivery authority;
-  ## the calling adapter confirms delivery only after its own write succeeds.
+  ## The ingress envelope owns the credentials and preconstructed sender.
+  ## Authentication of the signed route runs before submission decoding, over the
+  ## envelope's token-free copy; the handler receives only an `InteractionSnapshot`.
+  ## Returns the selected callback body and the exchange that owns delivery
+  ## authority; the calling adapter confirms delivery only after its own write.
   if router.isNil:
     raise newException(ValueError, "modal router is nil")
-  let decoded = interaction.decodeInvocation()
+  var decoded = ingress.decodingJson().decodeInvocation()
+  decoded.invocation.snapshot = ingress.snapshot()
   let route = router.envelopeValue.decodeRoute(decoded.customId, nowUnixSeconds)
   if not route.ok:
     raise newException(ModalRouteDispatchError,
@@ -248,24 +283,33 @@ proc selectResponse*[S](router: ModalRouter[S], interaction: JsonNode,
     decoded.invocation.context.responsePolicy,
     responder,
     decoded.invocation.context.followupBudget,
-    router.postAckSender(interaction))
+    ingress.postAckSender())
   let responseContext = appcontext.newContext(exchange)
   let apply = router.handlers[route.envelope.routeTypeId](
     router.services, exchange, responseContext, decoded.invocation,
     route.envelope, decoded.data)
   return await pumpApplication(exchange, responder, apply, router.tasks,
-    router.failureObserver, interaction.observedInteractionId())
+    router.failureObserver, ingress.observedInteractionId())
 
-proc route*[S](router: ModalRouter[S], interaction: JsonNode,
+proc selectResponse[S](router: ModalRouter[S], interaction: JsonNode,
+                        nowUnixSeconds: int64, receivedAt: MonoMillis):
+                        Future[SelectedResponse] {.async.} =
+  ## Forms the ingress envelope for a verified payload, then dispatches it.
+  return await router.selectResponse(
+    looseInteractionEnvelope(interaction, router.senderFactory),
+    nowUnixSeconds, receivedAt)
+
+proc route[S](router: ModalRouter[S], interaction: JsonNode,
                nowUnixSeconds: int64,
-               receivedAt = monotonicMillis()): Future[JsonNode] {.async.} =
+               receivedAt = monotonicMillis()): Future[JsonNode] {.
+               used, async.} =
   ## Authenticates, dispatches, and serializes one modal callback.
   ##
   ## This result-returning convenience confirms delivery locally and returns the
   ## callback body. Real ingress uses `InteractionDispatcher`.
   let selected = await router.selectResponse(
     interaction, nowUnixSeconds, receivedAt)
-  selected.delivery.confirmInitialDelivery()
+  selected.confirmDelivery()
   return selected.body
 
 proc close*[S](router: ModalRouter[S]): Future[void] {.

@@ -1,6 +1,6 @@
 ## Atomic interaction response state and deadline policy.
 
-import std/atomics
+import std/[atomics, json]
 
 import cordnim/rest/request
 
@@ -147,6 +147,61 @@ proc newInteractionResponder*(receivedAt: MonoMillis,
 proc state*(responder: InteractionResponder): InteractionResponseState =
   ## Loads the current response state atomically.
   InteractionResponseState(responder.atomicState.load())
+
+func `$`*(responder: InteractionResponder): string =
+  ## Renders state only; never traverses the atomic cell or deadlines storage.
+  if responder.isNil:
+    "InteractionResponder(nil)"
+  else:
+    "InteractionResponder(state: " & $responder.state() & ")"
+
+func repr*(responder: InteractionResponder): string =
+  ## Safe debug rendering for response authority.
+  $responder
+
+proc `%`*(responder: InteractionResponder): JsonNode =
+  ## Serializes only the observable response state.
+  if responder.isNil:
+    newJNull()
+  else:
+    %*{"state": $responder.state()}
+
+proc toJsonHook*(responder: InteractionResponder): JsonNode =
+  ## Redacts responder internals serialized through std/jsonutils.
+  %responder
+
+func `$`*(claim: InitialResponseClaim): string =
+  ## Claims are opaque authority, regardless of owner state.
+  if claim.isNil: "InitialResponseClaim(nil)"
+  else: "InitialResponseClaim(capability)"
+
+func repr*(claim: InitialResponseClaim): string =
+  ## Safe debug rendering for an exclusive claim.
+  $claim
+
+proc `%`*(claim: InitialResponseClaim): JsonNode =
+  ## Serializes an opaque marker only.
+  newJString(if claim.isNil: "none" else: "capability")
+
+proc toJsonHook*(claim: InitialResponseClaim): JsonNode =
+  ## Redacts claim ownership serialized through std/jsonutils.
+  %claim
+
+func `$`*(claimed: ClaimResult): string =
+  ## Safe claim outcome without traversing the capability.
+  if claimed.ok: "ClaimResult(ok: true)"
+  else: "ClaimResult(ok: false, error: " & $claimed.error & ")"
+
+func repr*(claimed: ClaimResult): string =
+  $claimed
+
+proc `%`*(claimed: ClaimResult): JsonNode =
+  result = %*{"ok": claimed.ok}
+  if not claimed.ok:
+    result["error"] = %($claimed.error)
+
+proc toJsonHook*(claimed: ClaimResult): JsonNode =
+  %claimed
 
 func remainingAckMs*(responder: InteractionResponder,
                      now: MonoMillis): int64 =

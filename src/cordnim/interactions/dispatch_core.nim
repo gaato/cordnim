@@ -31,11 +31,11 @@ type
   SelectedResponse* = object ## A selected callback body plus its delivery
                              ## authority.
     body*: JsonNode ## Serialized Discord interaction callback.
-    delivery*: InitialDeliveryAuthority ## Confirm-or-unknown delivery
+    deliveryValue: InitialDeliveryAuthority ## Confirm-or-unknown delivery
       ## authority; `nil` for a ping. The underlying exchange is deliberately
       ## not exposed through this capability.
 
-  InitialDeliveryAuthority* = ref object ## Narrow ingress capability for one
+  InitialDeliveryAuthority = ref object ## Narrow ingress capability for one
     ## selected callback's transport outcome.
     exchangeValue: InteractionExchange
 
@@ -44,6 +44,47 @@ type
     ## interaction application boundary fails, including retained post-ACK
     ## tails and autocomplete handlers. Never receives exception messages,
     ## tokens, custom IDs, or body contents.
+
+func `$`(authority: InitialDeliveryAuthority): string =
+  ## Renders the delivery capability as an opaque token, never its exchange.
+  if authority.isNil: "InitialDeliveryAuthority(none)"
+  else: "InitialDeliveryAuthority(capability)"
+
+func repr(authority: InitialDeliveryAuthority): string {.used.} =
+  ## Safe debug rendering that never traverses the underlying exchange.
+  $authority
+
+proc `%`(authority: InitialDeliveryAuthority): JsonNode =
+  ## Serializes the capability as an opaque marker.
+  newJString(if authority.isNil: "none" else: "capability")
+
+proc toJsonHook(authority: InitialDeliveryAuthority): JsonNode {.used.} =
+  ## Redacts delivery authorities serialized through `std/jsonutils`.
+  %authority
+
+func `$`*(response: SelectedResponse): string =
+  ## Renders the callback body but keeps the delivery capability opaque.
+  ##
+  ## The body is the Discord callback (type and data) and carries no credential;
+  ## the delivery authority is never traversed into its exchange or sender.
+  "SelectedResponse(body: " &
+    (if response.body.isNil: "none" else: $response.body) &
+    ", delivery: " & $response.deliveryValue & ")"
+
+func repr*(response: SelectedResponse): string =
+  ## Safe debug rendering that never reaches the delivery authority's exchange.
+  $response
+
+proc `%`*(response: SelectedResponse): JsonNode =
+  ## Serializes the token-free callback body and an opaque delivery marker.
+  result = newJObject()
+  result["body"] =
+    if response.body.isNil: newJNull() else: response.body.copy()
+  result["delivery"] = %response.deliveryValue
+
+proc toJsonHook*(response: SelectedResponse): JsonNode =
+  ## Redacts selected responses serialized through `std/jsonutils`.
+  %response
 
 func classify*(interaction: JsonNode): InteractionClass =
   ## Classifies a verified interaction payload without decoding its data.
@@ -68,15 +109,15 @@ func pingResponse*(): SelectedResponse =
   ##
   ## A ping carries no response authority, so `delivery` stays `nil` and both
   ## adapters treat its delivery as unconditionally confirmed.
-  SelectedResponse(body: %*{"type": 1}, delivery: nil)
+  SelectedResponse(body: %*{"type": 1}, deliveryValue: nil)
 
-proc confirmInitialDelivery*(authority: InitialDeliveryAuthority) {.
+proc confirmInitialDelivery(authority: InitialDeliveryAuthority) {.
     gcsafe, raises: [].} =
   ## Confirms that ingress delivered the selected callback.
   if not authority.isNil:
     authority.exchangeValue.confirmInitialDelivery()
 
-proc markInitialDeliveryUnknown*(authority: InitialDeliveryAuthority) {.
+proc markInitialDeliveryUnknown(authority: InitialDeliveryAuthority) {.
     gcsafe, raises: [].} =
   ## Seals the callback when ingress cannot determine its delivery outcome.
   if not authority.isNil:
@@ -98,7 +139,22 @@ proc selectedFromExchange*(exchange: InteractionExchange): SelectedResponse =
   ## Serializes the response one caller selected on `exchange`.
   SelectedResponse(
     body: exchange.selectedInitial().initialResponseJson(),
-    delivery: InitialDeliveryAuthority(exchangeValue: exchange))
+    deliveryValue: InitialDeliveryAuthority(exchangeValue: exchange))
+
+func hasDelivery(response: SelectedResponse): bool {.used.} =
+  ## Reports whether a transport outcome must be recorded.
+  not response.deliveryValue.isNil
+
+func deliveryAuthority(response: SelectedResponse): InitialDeliveryAuthority {.used.} =
+  ## Returns the private adapter capability.
+  response.deliveryValue
+
+proc confirmDelivery(response: SelectedResponse) {.used, gcsafe, raises: [].} =
+  response.deliveryValue.confirmInitialDelivery()
+
+proc markDeliveryUnknown(response: SelectedResponse) {.
+    used, gcsafe, raises: [].} =
+  response.deliveryValue.markInitialDeliveryUnknown()
 
 proc observeRetainedTail(apply: Future[void],
                          observer: RetainedFailureObserver,

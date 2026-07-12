@@ -13,7 +13,9 @@ import chronos
 import cordnim/app
 import cordnim/components/routes
 import cordnim/rest
-import ./[dispatcher, http_server, verification, webhook_completion]
+import ./[http_server, verification]
+import ./dispatcher {.all.}
+import ./webhook_completion {.all.}
 
 type InteractionHttpRuntime*[S] = ref object ## Resources owned by one HTTP
                                                ## interaction component.
@@ -55,11 +57,10 @@ proc newInteractionHttpRuntime*[S](
     discordApiBaseUrl, maxResponseBodyBytes)
   let restClient = newChronosRestClient(httpTransport.asRestTransport())
 
-  let interactionDispatcher = newInteractionDispatcher(
+  let interactionDispatcher = newInteractionDispatcherWithSenderFactory(
     app,
-    completionSink = interactionWebhookCompletion(restClient),
+    senderFactory = interactionWebhookSenderFactory(restClient),
     commandFailureObserver = commandFailureObserver,
-    postAckSink = interactionWebhookPostAckSink(restClient),
     handlerFailureObserver = handlerFailureObserver,
     routeEnvelope = routeEnvelope,
     routeClock = routeClock)

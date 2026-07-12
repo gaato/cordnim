@@ -28,17 +28,19 @@ type
     deliveryUnknown*: InteractionDeliveryCallback
       ## Called when a started response write has ambiguous delivery.
 
-  InteractionHttpHandler* = proc(body: seq[byte],
-                                  receivedAt: MonoMillis):
-                                  Future[InteractionHttpResponse]
-    {.gcsafe, raises: [].} ## Verified application handler.
+  UnsafeInteractionHttpHandler* = proc(body: seq[byte],
+                                        receivedAt: MonoMillis):
+                                        Future[InteractionHttpResponse]
+    {.gcsafe, raises: [].} ## Low-level verified-body handler. It receives the
+      ## complete credential-bearing request and is intentionally named unsafe;
+      ## normal applications use InteractionHttpRuntime and its dispatcher.
 
   InteractionHttpServer* = ref object ## Owned Chronos interaction listener.
     server: HttpServerRef
     verification: VerificationConfig
     replay: ReplayCache
     endpointPath: string
-    handler: InteractionHttpHandler
+    handler: UnsafeInteractionHttpHandler
 
   DeliveryNotifier = object
     confirmed: InteractionDeliveryCallback
@@ -164,7 +166,7 @@ proc process(server: InteractionHttpServer,
 
 proc newInteractionHttpServer*(bindAddress: TransportAddress,
                                verification: VerificationConfig,
-                               handler: InteractionHttpHandler,
+                               handler: UnsafeInteractionHttpHandler,
                                endpointPath = "/interactions",
                                replayMaxEntries = DefaultReplayCacheEntries):
                                InteractionHttpServer =

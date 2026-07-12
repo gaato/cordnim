@@ -2,11 +2,9 @@
 ##
 ## `InteractionDispatcher` is the one place that classifies an interaction and
 ## routes it to the command, autocomplete, component, or modal handler. Neither
-## transport is special: the HTTP and Gateway adapters both call `dispatch`, so
-## decoding, routing, handler execution, and initial-response selection are
-## identical, and only the final delivery confirmation differs. The dispatcher
-## returns a selected callback plus its delivery authority; it never claims a
-## successful write before the transport reports one.
+## transport is special: both adapters form one envelope, then call the same
+## routing core. Decoding, handler execution, and response selection are shared;
+## only delivery differs. The dispatcher never confirms a write on selection.
 
 import std/[json, options, times]
 
@@ -16,12 +14,17 @@ import cordnim/app
 import cordnim/commands
 import cordnim/components/[routes, typed_routes]
 import cordnim/rest/request
-import ./[autocomplete, component_router, dispatch_core, exchange, http_server,
-  modal_router, router]
+import ./[exchange, http_server]
+import ./autocomplete {.all.}
+import ./component_router {.all.}
+import ./dispatch_core {.all.}
+import ./envelope {.all.}
+import ./modal_router {.all.}
+import ./router {.all.}
 
 export SelectedResponse, InteractionClass, classify
-export router.DeferredCompletionSink, router.DeferredFailureObserver,
-  router.PostAckResponseSink, router.InitialResponseSender,
+export router.DeferredFailureObserver, router.InitialResponseSender,
+  envelope.InteractionSnapshot,
   dispatch_core.RetainedFailureObserver
 
 type
@@ -49,6 +52,7 @@ type
     componentRouterValue: ComponentRouter[S]
     modalRouterValue: ModalRouter[S]
     autocompleteRegistryValue: AutocompleteRegistry[S]
+    senderFactory: InteractionSenderFactory
     routeClock: InteractionWallClock
     handlerFailureObserver: RetainedFailureObserver
     state: DispatcherState
@@ -68,11 +72,10 @@ proc systemInteractionUnixSeconds*(): int64 {.gcsafe, raises: [].} =
   ## not need to alter process time to exercise route expiry.
   getTime().toUnix()
 
-proc newInteractionDispatcher*[S](
+proc newInteractionDispatcherWithSenderFactory[S](
     app: DiscordApp[S];
-    completionSink: DeferredCompletionSink = nil;
+    senderFactory: InteractionSenderFactory = nil;
     commandFailureObserver: DeferredFailureObserver = nil;
-    postAckSink: PostAckResponseSink = nil;
     handlerFailureObserver: RetainedFailureObserver = nil;
     routeEnvelope = none(RouteCodec);
     routeClock: InteractionWallClock = systemInteractionUnixSeconds):
@@ -80,12 +83,13 @@ proc newInteractionDispatcher*[S](
   ## Creates a dispatcher owning a command router and optional other routers.
   ##
   ## Component and modal routing are enabled by supplying `routeEnvelope`, whose
-  ## key ring both routers share so there is one signing scheme. `postAckSink`
-  ## carries every interaction class's original-message edits and follow-ups.
-  ## `handlerFailureObserver` receives redacted correlation IDs for component,
-  ## modal, and autocomplete failures. Autocomplete handlers are added with
-  ## `registerAutocomplete`. All routers borrow the app-owned services by
-  ## reference; no service container is copied.
+  ## key ring both routers share so there is one signing scheme. `senderFactory`
+  ## builds each interaction's original-message edit and follow-up sender from the
+  ## credentials captured in its ingress envelope, so no router retains an
+  ## interaction token or a mutable payload. `handlerFailureObserver` receives
+  ## redacted correlation IDs for component, modal, and autocomplete failures.
+  ## Autocomplete handlers are added with `registerAutocomplete`. All routers
+  ## borrow the app-owned services by reference; no service container is copied.
   if app.isNil:
     raise newException(ValueError, "interaction dispatcher requires an app")
   if routeClock.isNil:
@@ -93,17 +97,30 @@ proc newInteractionDispatcher*[S](
       "interaction dispatcher route clock is required")
   result = InteractionDispatcher[S](
     app: app,
-    commandRouterValue: newCommandRouter(app, completionSink,
-      commandFailureObserver, postAckSink),
+    commandRouterValue: newCommandRouterWithSenderFactory(
+      app, nil, commandFailureObserver),
     autocompleteRegistryValue: initAutocompleteRegistry[S](),
+    senderFactory: senderFactory,
     routeClock: routeClock,
     handlerFailureObserver: handlerFailureObserver,
     state: dsOpen)
   if routeEnvelope.isSome:
-    result.componentRouterValue = newComponentRouter(
-      app.serviceRef, routeEnvelope.get(), postAckSink, handlerFailureObserver)
-    result.modalRouterValue = newModalRouter(
-      app.serviceRef, routeEnvelope.get(), postAckSink, handlerFailureObserver)
+    result.componentRouterValue = newComponentRouterWithSenderFactory(
+      app.serviceRef, routeEnvelope.get(), nil, handlerFailureObserver)
+    result.modalRouterValue = newModalRouterWithSenderFactory(
+      app.serviceRef, routeEnvelope.get(), nil, handlerFailureObserver)
+
+proc newInteractionDispatcher*[S](
+    app: DiscordApp[S];
+    commandFailureObserver: DeferredFailureObserver = nil;
+    handlerFailureObserver: RetainedFailureObserver = nil;
+    routeEnvelope = none(RouteCodec);
+    routeClock: InteractionWallClock = systemInteractionUnixSeconds):
+    InteractionDispatcher[S] =
+  ## Creates a credential-blind dispatcher; owned runtimes attach transport I/O.
+  newInteractionDispatcherWithSenderFactory(
+    app, nil, commandFailureObserver, handlerFailureObserver,
+    routeEnvelope, routeClock)
 
 proc registerComponent*[S, T](dispatcher: InteractionDispatcher[S],
                               codec: TypedRouteCodec[T],
@@ -145,39 +162,57 @@ proc registerAutocomplete*[S](dispatcher: InteractionDispatcher[S],
   dispatcher.autocompleteRegistryValue.register(
     command, option, handler, group, subcommand)
 
-proc dispatch*[S](dispatcher: InteractionDispatcher[S], interaction: JsonNode,
-                  receivedAt: MonoMillis): Future[SelectedResponse] {.async.} =
-  ## Classifies one interaction and routes it through the shared response model.
+proc dispatchEnvelope[S](dispatcher: InteractionDispatcher[S],
+                         ingress: InteractionEnvelope,
+                         receivedAt: MonoMillis):
+                         Future[SelectedResponse] {.async.} =
+  ## Routes one already-owned ingress envelope through the shared response model.
   ##
   ## A ping bypasses every application handler but still flows through this one
   ## classifier, so both transports answer it identically. The returned
   ## `SelectedResponse.delivery` is `nil` only for a ping.
   dispatcher.requireOpen()
-  case interaction.classify()
+  case ingress.interactionClass()
   of icPing:
     return pingResponse()
   of icCommand:
     return await dispatcher.commandRouterValue.selectResponse(
-      interaction, receivedAt)
+      ingress, receivedAt)
   of icComponent:
     if dispatcher.componentRouterValue.isNil:
       raise newException(InteractionDispatchError,
         "component interactions are not configured")
     return await dispatcher.componentRouterValue.selectResponse(
-      interaction, dispatcher.routeClock(), receivedAt)
+      ingress, dispatcher.routeClock(), receivedAt)
   of icModalSubmit:
     if dispatcher.modalRouterValue.isNil:
       raise newException(InteractionDispatchError,
         "modal interactions are not configured")
     return await dispatcher.modalRouterValue.selectResponse(
-      interaction, dispatcher.routeClock(), receivedAt)
+      ingress, dispatcher.routeClock(), receivedAt)
   of icAutocomplete:
     return await selectAutocompleteResponse(
       dispatcher.autocompleteRegistryValue, dispatcher.app.serviceRef,
-      interaction, receivedAt, dispatcher.handlerFailureObserver)
+      ingress, receivedAt, dispatcher.handlerFailureObserver)
   of icUnknown:
     raise newException(InteractionDispatchError,
       "unsupported interaction type")
+
+proc dispatchWithSenderFactory[S](dispatcher: InteractionDispatcher[S],
+                                  interaction: JsonNode,
+                                  receivedAt: MonoMillis,
+                                  senderFactory: InteractionSenderFactory):
+                                  Future[SelectedResponse] {.async.} =
+  ## Captures credentials and payload ownership before classification or decode.
+  let ingress = looseInteractionEnvelope(interaction, senderFactory)
+  return await dispatcher.dispatchEnvelope(ingress, receivedAt)
+
+proc dispatch[S](dispatcher: InteractionDispatcher[S], interaction: JsonNode,
+                  receivedAt: MonoMillis): Future[SelectedResponse] {.
+                  used, async.} =
+  ## Forms exactly one envelope at dispatcher ingress, then routes it.
+  return await dispatcher.dispatchWithSenderFactory(
+    interaction, receivedAt, dispatcher.senderFactory)
 
 proc callbackBytes(node: JsonNode): seq[byte] =
   let serialized = $node
@@ -185,8 +220,9 @@ proc callbackBytes(node: JsonNode): seq[byte] =
   for index, value in serialized:
     result[index] = byte(ord(value))
 
-proc asHttpHandler*[S](dispatcher: InteractionDispatcher[S]):
-    InteractionHttpHandler =
+proc httpHandlerWithSenderFactory[S](dispatcher: InteractionDispatcher[S],
+                                     senderFactory: InteractionSenderFactory):
+    UnsafeInteractionHttpHandler =
   ## Adapts the dispatcher to verified HTTP ingress.
   ##
   ## The returned handler serializes the selected callback and hands
@@ -204,12 +240,13 @@ proc asHttpHandler*[S](dispatcher: InteractionDispatcher[S]):
       for index, value in body:
         bodyText[index] = char(value)
       let interaction = parseJson(bodyText)
-      let selected = await dispatcher.dispatch(interaction, receivedAt)
+      let selected = await dispatcher.dispatchWithSenderFactory(
+        interaction, receivedAt, senderFactory)
       let bytes = selected.body.callbackBytes()
-      if selected.delivery.isNil:
+      if not selected.hasDelivery():
         # A ping carries no response authority; its delivery is unconditional.
         return jsonInteractionResponse(bytes)
-      let delivery = selected.delivery
+      let delivery = selected.deliveryAuthority()
       proc confirmDelivery() {.closure, gcsafe, raises: [].} =
         delivery.confirmInitialDelivery()
       proc markDeliveryUnknown() {.closure, gcsafe, raises: [].} =
@@ -221,7 +258,39 @@ proc asHttpHandler*[S](dispatcher: InteractionDispatcher[S]):
     {.cast(gcsafe).}:
       return run()
 
-proc asGatewayHandler*[S](dispatcher: InteractionDispatcher[S]):
+proc asHttpHandler*[S](dispatcher: InteractionDispatcher[S]):
+    UnsafeInteractionHttpHandler =
+  ## Adapts the dispatcher using its configured post-ACK sender factory.
+  dispatcher.httpHandlerWithSenderFactory(dispatcher.senderFactory)
+
+proc dispatchGatewayEnvelope[S](dispatcher: InteractionDispatcher[S],
+                                ingress: InteractionEnvelope,
+                                receivedAt: MonoMillis,
+                                sender: InitialResponseSender):
+                                Future[void] {.async.} =
+  ## Delivers an already-formed trusted Gateway envelope exactly once.
+  if dispatcher.isNil or dispatcher.app.isNil or
+      dispatcher.app.config.interactionIngress != ingressGateway:
+    raise newException(ValueError,
+      "Gateway interaction handler requires Gateway interaction ingress")
+  if sender.isNil:
+    raise newException(ValueError, "Gateway interaction sender is required")
+  let selected = await dispatcher.dispatchEnvelope(ingress, receivedAt)
+  try:
+    await sender(selected.body)
+    if selected.hasDelivery():
+      selected.confirmDelivery()
+  except CancelledError:
+    if selected.hasDelivery():
+      selected.markDeliveryUnknown()
+    raise
+  except CatchableError:
+    if selected.hasDelivery():
+      selected.markDeliveryUnknown()
+    raise
+
+proc gatewayHandlerWithSenderFactory[S](dispatcher: InteractionDispatcher[S],
+                                        senderFactory: InteractionSenderFactory):
     proc(interaction: JsonNode, receivedAt: MonoMillis,
          sender: InitialResponseSender): Future[void]
       {.gcsafe, raises: [].} =
@@ -241,21 +310,17 @@ proc asGatewayHandler*[S](dispatcher: InteractionDispatcher[S]):
     proc run(): Future[void] {.async.} =
       if sender.isNil:
         raise newException(ValueError, "Gateway interaction sender is required")
-      let selected = await dispatcher.dispatch(interaction, receivedAt)
-      try:
-        await sender(selected.body)
-        if not selected.delivery.isNil:
-          selected.delivery.confirmInitialDelivery()
-      except CancelledError:
-        if not selected.delivery.isNil:
-          selected.delivery.markInitialDeliveryUnknown()
-        raise
-      except CatchableError:
-        if not selected.delivery.isNil:
-          selected.delivery.markInitialDeliveryUnknown()
-        raise
+      let ingress = looseInteractionEnvelope(interaction, senderFactory)
+      await dispatcher.dispatchGatewayEnvelope(ingress, receivedAt, sender)
     {.cast(gcsafe).}:
       return run()
+
+proc asGatewayHandler*[S](dispatcher: InteractionDispatcher[S]):
+    proc(interaction: JsonNode, receivedAt: MonoMillis,
+         sender: InitialResponseSender): Future[void]
+      {.gcsafe, raises: [].} =
+  ## Adapts the dispatcher using its configured post-ACK sender factory.
+  dispatcher.gatewayHandlerWithSenderFactory(dispatcher.senderFactory)
 
 proc closeOwned[S](dispatcher: InteractionDispatcher[S]): Future[void] {.
                    async: (raises: []).} =
