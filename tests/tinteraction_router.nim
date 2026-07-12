@@ -170,6 +170,7 @@ proc payload(): JsonNode =
     "token": "not-logged",
     "context": 0,
     "guild_id": "300",
+    "channel_id": "400",
     "authorizing_integration_owners": {"0": "300"},
     "data": {
       "name": "greet",
@@ -515,6 +516,7 @@ suite "shared interaction router":
     interaction["app_permissions"] = %"0"
     interaction["authorizing_integration_owners"] = %*{"1": "42"}
     let decoded = interaction.commandInvocation()
+    check decoded.channelId == some(ChannelId.parseId("400"))
     check decoded.context.hasOwner(iiUserInstall)
     check not decoded.context.hasOwner(iiGuildInstall)
     check decoded.context.followupBudget.get() == 5

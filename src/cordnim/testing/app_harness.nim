@@ -4,6 +4,7 @@ import std/strutils
 import chronos
 
 import cordnim/[app, commands]
+import cordnim/app/context as appcontext
 
 type
   TestDiscordApp*[S] = ref object ## Recorder around a real typed `DiscordApp`.
@@ -25,6 +26,19 @@ proc invokeCommand*[S](testApp: TestDiscordApp[S],
     raise newException(ValueError, "cannot invoke through a nil test app")
   testApp.invocations.add(invocation)
   result = await testApp.app.dispatch(invocation)
+  testApp.results.add(result)
+
+proc invokeCommand*[S](testApp: TestDiscordApp[S];
+                       context: appcontext.Context;
+                       invocation: sink CommandInvocation):
+                       Future[CommandResult] {.async.} =
+  ## Dispatches with a real response capability and records the outcome.
+  if testApp.isNil:
+    raise newException(ValueError, "cannot invoke through a nil test app")
+  if context.isNil:
+    raise newException(ValueError, "response-capable invocation needs a context")
+  testApp.invocations.add(invocation)
+  result = await testApp.app.dispatch(context, invocation)
   testApp.results.add(result)
 
 proc expectKind*(commandResult: CommandResult, expected: CommandResultKind) =

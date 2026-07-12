@@ -9,6 +9,7 @@ import std/json
 import chronos
 
 import cordnim/components/forms
+import cordnim/api/messages
 import cordnim/interactions/[exchange, responder, response_codec]
 
 export exchange
@@ -90,6 +91,13 @@ proc reply*(context: Context, content: string,
   ## Selects a plain-content initial message response.
   context.reply(%*{"content": content}, visibility)
 
+proc reply*(context: Context, draft: MessageDraft[V2];
+            visibility = vPublic;
+            allowedMentions = initAllowedMentions()): Future[void] =
+  ## Selects a validated Components V2 initial response.
+  context.reply(v2Create(draft,
+    allowedMentions = allowedMentions).toJson(), visibility)
+
 proc deferReply*(context: Context, visibility = vPublic,
                  update = false): Future[void] =
   ## Selects a deferred response so later edits or follow-ups are legal.
@@ -102,6 +110,12 @@ proc deferReply*(context: Context, visibility = vPublic,
 proc updateMessage*(context: Context, body: sink JsonNode): Future[void] =
   ## Selects an immediate component-message update.
   context.selectInitial(raUpdateMessage, body, vPublic)
+
+proc updateMessage*(context: Context, draft: MessageDraft[V2];
+                    allowedMentions = initAllowedMentions()): Future[void] =
+  ## Updates or upgrades the component message to Components V2.
+  context.updateMessage(v2Edit(draft.v2.children,
+    allowedMentions = allowedMentions).toJson())
 
 proc validatedModalBody(spec: ModalSpec): JsonNode =
   let problems = spec.validate()
@@ -139,6 +153,12 @@ proc editOriginal*(context: Context, body: sink JsonNode): Future[void] =
   ## Waits for confirmed initial delivery, then edits the original response.
   context.sendAfterAck(raEditOriginal, body, vPublic)
 
+proc editOriginal*(context: Context, draft: MessageDraft[V2];
+                   allowedMentions = initAllowedMentions()): Future[void] =
+  ## Edits or upgrades the original response to Components V2.
+  context.editOriginal(v2Edit(draft.v2.children,
+    allowedMentions = allowedMentions).toJson())
+
 proc followup*(context: Context, body: sink JsonNode,
                visibility = vPublic): Future[void] =
   ## Waits for confirmed initial delivery, then sends a follow-up.
@@ -148,3 +168,10 @@ proc followup*(context: Context, content: string,
                visibility = vPublic): Future[void] =
   ## Sends a plain-content follow-up after confirmed initial delivery.
   context.followup(%*{"content": content}, visibility)
+
+proc followup*(context: Context, draft: MessageDraft[V2];
+               visibility = vPublic;
+               allowedMentions = initAllowedMentions()): Future[void] =
+  ## Sends a validated Components V2 follow-up.
+  context.followup(v2Create(draft,
+    allowedMentions = allowedMentions).toJson(), visibility)

@@ -1,4 +1,4 @@
-version       = "0.1.0"
+version       = "0.1.1"
 author        = "Gakuto Furuya"
 description   = "A type-safe Discord application runtime for Nim"
 license       = "MPL-2.0"
@@ -26,6 +26,7 @@ const publicEntries = [
   "src/cordnim/api/monetization.nim",
   "src/cordnim/api/oauth2.nim",
   "src/cordnim/api/options.nim",
+  "src/cordnim/api/scheduled_events.nim",
   "src/cordnim/api/threads.nim",
   "src/cordnim/api/webhooks.nim",
   "src/cordnim/app.nim",
@@ -46,6 +47,7 @@ const publicEntries = [
   "src/cordnim/gateway/chronos_runtime.nim",
   "src/cordnim/interactions.nim",
   "src/cordnim/models.nim",
+  "src/cordnim/models/scheduled_event.nim",
   "src/cordnim/observability.nim",
   "src/cordnim/raw.nim",
   "src/cordnim/rest.nim",

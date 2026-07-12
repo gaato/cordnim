@@ -129,3 +129,23 @@ suite "semantic thread REST":
         invitable = some(true))
     expect ValueError:
       discard forumThread("empty", legacyMessage())
+
+  test "forum V2 creation upgrades the endpoint-required legacy starter":
+    var createdThread = threadJson()
+    createdThread["last_message_id"] = %"100"
+    let probe = CaptureProbe(responses: @[
+      jsonResponse(201, createdThread),
+      jsonResponse(200, messageJson(channelId = "43")),
+    ])
+    let client = probe.startedClient()
+    let created = waitFor client.createForumThreadV2(channelId, "index",
+      v2Draft(textDisplay("# Index")))
+    waitFor client.stop()
+    check created.thread.id == threadId
+    check created.starter.id == messageId
+    check probe.requests[0].bodyJson()["message"]["content"].getStr() ==
+      "(preparing...)"
+    let upgrade = probe.requests[1].bodyJson()
+    check upgrade["flags"].getInt() == 32768
+    check upgrade["content"].kind == JNull
+    check upgrade["components"][0]["type"].getInt() == 10

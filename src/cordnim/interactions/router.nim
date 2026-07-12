@@ -262,12 +262,24 @@ proc commandInvocation*(interaction: JsonNode): CommandInvocation =
 
   let kind = data.commandKind()
   let context = interaction.invocationContext()
+  var channelId = none(ChannelId)
+  if interaction.hasKey("channel_id"):
+    if interaction["channel_id"].kind != JString:
+      raise newException(InteractionDecodeError,
+        "interaction channel_id must be a string")
+    try:
+      channelId = some(parseId(
+        ChannelId, interaction["channel_id"].getStr()))
+    except ValueError:
+      raise newException(InteractionDecodeError,
+        "interaction channel_id is not a valid snowflake")
   result = CommandInvocation(
     kind: kind,
     name: data["name"].getStr(),
     options: data.commandOptions(),
     userId: context.invokingUserId,
     guildId: context.guildId,
+    channelId: channelId,
     context: context,
     resolved: if data.hasKey("resolved"): data["resolved"] else: newJObject()
   )

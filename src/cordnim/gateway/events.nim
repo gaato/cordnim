@@ -13,7 +13,7 @@ import chronos
 
 import cordnim/core/[fields, ids, open_enums]
 import cordnim/models/[channel, common, guild, member, message, monetization,
-  role, user]
+  role, scheduled_event, user]
 
 import ./[dispatch_runtime, session]
 
@@ -36,6 +36,9 @@ type
     gekGuildRoleCreate, ## A role was created.
     gekGuildRoleUpdate, ## A role was updated.
     gekGuildRoleDelete, ## A role was deleted.
+    gekGuildScheduledEventCreate, ## A scheduled event was created.
+    gekGuildScheduledEventUpdate, ## A scheduled event changed.
+    gekGuildScheduledEventDelete, ## A scheduled event was deleted.
     gekMessageCreate, ## A message was created.
     gekMessageUpdate, ## A message was partially updated.
     gekMessageDelete, ## One message was deleted.
@@ -219,6 +222,9 @@ type
       guildRole*: GuildRoleEvent
     of gekGuildRoleDelete:
       guildRoleDelete*: GuildRoleDeleteEvent
+    of gekGuildScheduledEventCreate, gekGuildScheduledEventUpdate,
+        gekGuildScheduledEventDelete:
+      scheduledEvent*: ScheduledEvent
     of gekMessageCreate:
       messageCreated*: Message
     of gekMessageUpdate:
@@ -719,6 +725,20 @@ proc decodeGatewayEvent*(event: DispatchEvent): GatewayEvent =
       sequence: event.sequence, partitionKey: event.partitionKey,
       receivedAtMs: event.receivedAtMs,
       guildRoleDelete: decodeRoleDelete(data))
+  of "GUILD_SCHEDULED_EVENT_CREATE", "GUILD_SCHEDULED_EVENT_UPDATE",
+      "GUILD_SCHEDULED_EVENT_DELETE":
+    let decoded = decodeScheduledEvent(data)
+    template scheduledEventResult(eventKind: untyped): untyped =
+      GatewayEvent(kind: eventKind, shardId: event.shardId,
+        sequence: event.sequence, partitionKey: event.partitionKey,
+        receivedAtMs: event.receivedAtMs, scheduledEvent: decoded)
+    case event.name
+    of "GUILD_SCHEDULED_EVENT_CREATE":
+      result = scheduledEventResult(gekGuildScheduledEventCreate)
+    of "GUILD_SCHEDULED_EVENT_UPDATE":
+      result = scheduledEventResult(gekGuildScheduledEventUpdate)
+    else:
+      result = scheduledEventResult(gekGuildScheduledEventDelete)
   of "MESSAGE_CREATE":
     result = GatewayEvent(kind: gekMessageCreate, shardId: event.shardId,
       sequence: event.sequence, partitionKey: event.partitionKey,

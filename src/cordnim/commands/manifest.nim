@@ -3,6 +3,7 @@
 import std/[algorithm, json, options, strutils]
 
 import cordnim/core/bits
+import cordnim/core/permissions
 import ./spec
 
 type
@@ -121,6 +122,10 @@ func commandJson(command: CommandSpec): JsonNode =
   for context in CommandInteractionContext:
     if context in command.contexts:
       result["contexts"].add(%ord(context))
+
+  if command.defaultMemberPermissions.isSome:
+    result["default_member_permissions"] =
+      %command.defaultMemberPermissions.get.toDecimal()
 
   if command.kind == ckChatInput:
     result["options"] = newJArray()
@@ -407,3 +412,12 @@ proc parseCommandSpec*(node: JsonNode): CommandSpec =
   let contexts = requireField(node, "contexts", {JArray}, "command")
   result.contexts =
     if contexts == nil: {guildChannel} else: parseContexts(contexts)
+  let defaultPermissions = requireField(
+    node, "default_member_permissions", {JString, JNull}, "command")
+  if defaultPermissions != nil and defaultPermissions.kind == JString:
+    try:
+      result.defaultMemberPermissions =
+        some(parsePermissions(defaultPermissions.getStr()))
+    except ValueError as error:
+      raise newException(CommandSpecError,
+        "invalid default_member_permissions: " & error.msg)

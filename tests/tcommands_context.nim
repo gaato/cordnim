@@ -5,6 +5,7 @@ import std/[assertions, json, options]
 import chronos
 
 import cordnim/[app, commands]
+import cordnim/components
 import cordnim/app/context as appcontext
 import cordnim/interactions/[context, exchange, responder]
 import cordnim/rest/chronos_driver
@@ -32,6 +33,9 @@ proc respond(context: CommandCtx[CommandServices], action: string):
       "title": "Example",
       "components": []
     })
+  of "v2":
+    await context.reply(v2Draft(textDisplay("## Typed V2")),
+      visibility = vEphemeral)
   else:
     return rejected("unknown response action")
   return succeeded(action)
@@ -110,6 +114,13 @@ block command_context_forwards_modal_responses:
   doAssert modal.state == irResponded
   doAssert modal.responses.len == 1
   doAssert modal.responses[0].action == raModal
+
+block command_context_builds_typed_v2_responses:
+  let response = exercise("v2", ikApplicationCommand)
+  doAssert response.responses.len == 1
+  doAssert response.responses[0].body["flags"].getInt() == 32768
+  doAssert response.responses[0].body["allowed_mentions"] == %*{"parse": []}
+  doAssert response.responses[0].body["components"][0]["type"].getInt() == 10
 
 block result_only_dispatch_rejects_response_io:
   doAssertRaises CommandResponseUnavailableError:

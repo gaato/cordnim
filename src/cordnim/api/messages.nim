@@ -577,6 +577,10 @@ proc toWire(create: MessageCreate[V2]): JsonNode =
   else:
     result["flags"] = newJInt(componentsV2Flag)
 
+proc toJson*(create: MessageCreate[V2]): JsonNode =
+  ## Serializes a validated V2 create for interaction and webhook adapters.
+  create.toWire()
+
 func createIdempotency(create: MessageCreate): Idempotency =
   ## A message create is retryable only when a valid nonce is enforced.
   if create.nonceValue.isSome and create.enforceNonceValue:
@@ -677,6 +681,10 @@ proc toWire(edit: MessageEdit[V2]): JsonNode =
     result["flags"] = newJInt(edit.flagsValue.get or componentsV2Flag)
   else:
     result["flags"] = newJInt(componentsV2Flag)
+
+proc toJson*(edit: MessageEdit[V2]): JsonNode =
+  ## Serializes a validated V2 edit, including irreversible legacy resets.
+  edit.toWire()
 
 # ---------------------------------------------------------------------------
 # Bulk delete

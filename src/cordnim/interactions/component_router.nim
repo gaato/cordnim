@@ -17,6 +17,7 @@ import std/[json, options, tables]
 import chronos
 
 import cordnim/app/context as appcontext
+import cordnim/api/messages
 import cordnim/components/[forms, routes, typed_routes]
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
@@ -402,6 +403,13 @@ proc reply*[S](context: ComponentCtx[S], content: string,
   ## Selects a plain-content new-message response to the component.
   appcontext.reply(context.responseContextValue, content, visibility)
 
+proc reply*[S](context: ComponentCtx[S], draft: MessageDraft[V2];
+               visibility = vPublic;
+               allowedMentions = initAllowedMentions()): Future[void] =
+  ## Selects a validated Components V2 response to the component.
+  appcontext.reply(context.responseContextValue, draft, visibility,
+    allowedMentions)
+
 proc deferReply*[S](context: ComponentCtx[S], visibility = vPublic): Future[void] =
   ## Selects a deferred new message so later edits or follow-ups are legal.
   appcontext.deferReply(context.responseContextValue, visibility)
@@ -414,6 +422,12 @@ proc updateMessage*[S](context: ComponentCtx[S], body: sink JsonNode):
     Future[void] =
   ## Selects an immediate update of the component's source message.
   appcontext.updateMessage(context.responseContextValue, body)
+
+proc updateMessage*[S](context: ComponentCtx[S], draft: MessageDraft[V2];
+                       allowedMentions = initAllowedMentions()): Future[void] =
+  ## Updates or upgrades the component's source message to Components V2.
+  appcontext.updateMessage(context.responseContextValue, draft,
+    allowedMentions)
 
 proc showModal*[S](context: ComponentCtx[S], spec: ModalSpec): Future[void] =
   ## Validates and selects a modal as the component's initial response.
@@ -429,7 +443,20 @@ proc editOriginal*[S](context: ComponentCtx[S], body: sink JsonNode):
   ## Waits for confirmed initial delivery, then edits the original response.
   appcontext.editOriginal(context.responseContextValue, body)
 
+proc editOriginal*[S](context: ComponentCtx[S], draft: MessageDraft[V2];
+                      allowedMentions = initAllowedMentions()): Future[void] =
+  ## Edits or upgrades the original response to Components V2.
+  appcontext.editOriginal(context.responseContextValue, draft,
+    allowedMentions)
+
 proc followup*[S](context: ComponentCtx[S], body: sink JsonNode,
                   visibility = vPublic): Future[void] =
   ## Waits for confirmed initial delivery, then sends a follow-up message.
   appcontext.followup(context.responseContextValue, body, visibility)
+
+proc followup*[S](context: ComponentCtx[S], draft: MessageDraft[V2];
+                  visibility = vPublic;
+                  allowedMentions = initAllowedMentions()): Future[void] =
+  ## Sends a validated Components V2 follow-up.
+  appcontext.followup(context.responseContextValue, draft, visibility,
+    allowedMentions)

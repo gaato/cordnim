@@ -19,7 +19,7 @@ import cordnim/app
 import cordnim/gateway/[dispatch_runtime, session]
 import cordnim/gateway/events as gateway_events
 import cordnim/models/[channel, guild, member, message, monetization, role,
-  user]
+  scheduled_event, user]
 
 export gateway_events
 export guild.Guild
@@ -27,6 +27,7 @@ export member.GuildMember
 export message.Message
 export monetization.Entitlement, monetization.Subscription
 export role.Role
+export scheduled_event.ScheduledEvent
 export user.User
 
 type
@@ -246,6 +247,12 @@ defineEventRoute(guildRoleUpdateEvent, onGuildRoleUpdate, gekGuildRoleUpdate,
   GuildRoleEvent, guildRole)
 defineEventRoute(guildRoleDeleteEvent, onGuildRoleDelete, gekGuildRoleDelete,
   GuildRoleDeleteEvent, guildRoleDelete)
+defineEventRoute(guildScheduledEventCreateEvent, onGuildScheduledEventCreate,
+  gekGuildScheduledEventCreate, ScheduledEvent, scheduledEvent)
+defineEventRoute(guildScheduledEventUpdateEvent, onGuildScheduledEventUpdate,
+  gekGuildScheduledEventUpdate, ScheduledEvent, scheduledEvent)
+defineEventRoute(guildScheduledEventDeleteEvent, onGuildScheduledEventDelete,
+  gekGuildScheduledEventDelete, ScheduledEvent, scheduledEvent)
 defineEventRoute(messageCreateEvent, onMessageCreate, gekMessageCreate,
   Message, messageCreated)
 defineEventRoute(messageUpdateEvent, onMessageUpdate, gekMessageUpdate,

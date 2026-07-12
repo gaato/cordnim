@@ -1,9 +1,10 @@
 ## Deterministic command manifest tests.
 
-import std/[algorithm, json, unittest]
+import std/[algorithm, json, options, unittest]
 
 import cordnim/commands
 import cordnim/core/ids
+import cordnim/core/[bits, permissions]
 
 type ManifestServices = object
 
@@ -150,6 +151,15 @@ suite "command localization manifest":
     let option = manifest.toJson()["commands"][0]["options"][0]
     check option["type"].getInt() == 7
     check option["channel_types"] == %*[0, 2]
+
+  test "serializes default member permissions as a decimal string":
+    let admin = initDiscordBits[Permission]([Permission.administrator])
+    let spec = initChatInputCommand("admin", "Admin only",
+      defaultMemberPermissions = some(admin))
+    let command = CommandManifest(
+      schemaRevision: "r", commands: @[spec]).toJson()["commands"][0]
+    check command["default_member_permissions"].getStr() == "8"
+    check parseCommandSpec(command).defaultMemberPermissions == some(admin)
 
   test "serializes choice values with their declared JSON type":
     let spec = initChatInputCommand("pick", "Pick values", options = @[

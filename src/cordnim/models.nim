@@ -34,6 +34,7 @@ import models/poll
 import models/channel
 import models/guild
 import models/message
+import models/scheduled_event
 import models/monetization
 import models/oauth
 import models/webhook
@@ -46,6 +47,7 @@ export poll
 export channel
 export guild
 export message
+export scheduled_event
 export monetization
 export oauth
 export webhook

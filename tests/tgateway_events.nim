@@ -5,6 +5,7 @@ import chronos
 import cordnim/core/[errors, fields, ids, open_enums]
 import cordnim/gateway/[dispatch_runtime, events, session]
 import cordnim/models/[channel, message]
+import cordnim/models/scheduled_event
 import cordnim/testing/fixtures
 
 proc dispatch(name: string; data: JsonNode; sequence = 7): DispatchEvent =
@@ -238,6 +239,20 @@ block commerce_dispatches_reuse_semantic_models:
     dispatch("ENTITLEMENT_UPDATE", entitlementFixture()))
   doAssert entitlement.kind == gekEntitlementUpdate
   doAssert entitlement.entitlement.id == EntitlementId.parseId("10")
+
+block scheduled_event_dispatches_are_typed:
+  let event = decodeGatewayEvent(dispatch("GUILD_SCHEDULED_EVENT_UPDATE", %*{
+    "id": "90", "guild_id": "290926798626357999",
+    "channel_id": "645027906669510667", "creator_id": nil,
+    "name": "Meeting", "description": nil,
+    "scheduled_start_time": "2027-02-22T11:00:00Z",
+    "scheduled_end_time": nil, "privacy_level": 2, "status": 2,
+    "entity_type": 2, "entity_id": nil, "entity_metadata": nil,
+    "image": nil,
+  }))
+  doAssert event.kind == gekGuildScheduledEventUpdate
+  doAssert event.scheduledEvent.id == ScheduledEventId.parseId("90")
+  doAssert event.scheduledEvent.status.knownValue == some(sesActive)
 
   var guildEntitlement = entitlementFixture()
   guildEntitlement.delete("user_id")

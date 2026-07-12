@@ -8,7 +8,7 @@ import std/[strutils, uri]
 
 import chronos
 import chronicles
-import websock/websock
+import ./private/websock_client
 
 import ./[close_policy, transport]
 
@@ -123,7 +123,7 @@ proc connectSession(
 
     # An empty TLS flag set plus the explicit hostName keeps BearSSL
     # certificate-chain, hostname, and SNI verification enabled.
-    state.session = await WebSocket.connect(
+    state.session = await connectWebSocket(
       host = target.host,
       path = target.path,
       hostName = target.hostName,

@@ -65,6 +65,15 @@ type
     afterValue: Option[UserId]
     limitValue: Option[int]
 
+  ForumV2Thread* = object ## Forum thread whose starter is Components V2.
+    thread*: channel_model.Channel ## Created forum thread.
+    starter*: Message ## Starter message after the V2 upgrade.
+
+  ForumV2UpgradeError* = object of CatchableError
+    ## The forum thread was created but its starter could not be upgraded.
+    threadId*: ChannelId ## Created thread that remains visible.
+    starterMessageId*: MessageId ## Legacy starter requiring recovery.
+
 proc validateName(name: string) =
   if name.validateUtf8 != -1:
     raise newException(ValueError, "thread name must be valid UTF-8")
@@ -301,6 +310,49 @@ proc createForumThread*(client: ChronosRestClient;
   return await client.executeJson(raw, decodeChannelResponse,
     auth = darBot, meta = options.requestMeta(idNever),
     statuses = {SuccessStatus(201)})
+
+proc createForumThreadV2*(client: ChronosRestClient;
+                          channelId: ChannelId; name: string;
+                          draft: MessageDraft[V2];
+                          placeholder = "(preparing...)";
+                          autoArchiveDuration =
+                            none(ThreadAutoArchiveDuration);
+                          rateLimitPerUser = none(int);
+                          appliedTags: seq[ForumTagId] = @[];
+                          allowedMentions = initAllowedMentions();
+                          options = initApiCallOptions()):
+                          Future[ForumV2Thread] {.async.} =
+  ## Creates the endpoint-required legacy starter, then upgrades it to V2.
+  ##
+  ## Discord does not accept the Components V2 flag in a forum create starter.
+  ## If the second request fails, `ForumV2UpgradeError` carries both identities
+  ## needed to recover or delete the partial thread without searching.
+  if placeholder.len == 0:
+    raise newException(ValueError,
+      "forum V2 placeholder must not be empty")
+  let thread = await client.createForumThread(channelId,
+    forumThread(name, legacyMessage(placeholder),
+      autoArchiveDuration = autoArchiveDuration,
+      rateLimitPerUser = rateLimitPerUser,
+      appliedTags = appliedTags,
+      allowedMentions = initAllowedMentions()), options)
+  if thread.lastMessageId.isNone:
+    let error = newException(ForumV2UpgradeError,
+      "forum thread response omitted its starter message ID")
+    error.threadId = thread.id
+    raise error
+  let starterId = thread.lastMessageId.get
+  try:
+    let starter = await client.upgradeMessageToV2(
+      MessageHandle[Legacy](channelId: thread.id, messageId: starterId),
+      v2Edit(draft.v2.children, allowedMentions = allowedMentions), options)
+    return ForumV2Thread(thread: thread, starter: starter)
+  except CatchableError:
+    let error = newException(ForumV2UpgradeError,
+      "forum thread was created but its starter V2 upgrade failed")
+    error.threadId = thread.id
+    error.starterMessageId = starterId
+    raise error
 
 proc listActiveGuildThreads*(client: ChronosRestClient; guildId: GuildId;
                              options = initApiCallOptions()):

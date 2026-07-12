@@ -8,6 +8,7 @@ import std/[algorithm, hashes, json, options, strutils, unicode]
 import chronos
 
 import cordnim/app/context as appcontext
+import cordnim/api/messages
 import cordnim/core/[bits, ids, permissions]
 import cordnim/interactions/context
 import cordnim/interactions/responder
@@ -172,6 +173,8 @@ type
     ack*: CommandAckKind ## Initial-response policy.
     autoDeferAfterMs*: int ## Auto-defer delay in milliseconds.
     ephemeral*: bool ## Whether an auto-defer is ephemeral.
+    defaultMemberPermissions*: Option[Permissions] ## Default member
+      ## permission restriction sent to Discord, or absent for no restriction.
     requiredBotPermissions*: Permissions ## Known bot permissions used by the
                                          ## handler.
     options*: seq[CommandOptionSpec] ## Typed command options.
@@ -193,6 +196,8 @@ type
     options*: JsonNode ## Object containing Discord option values by name.
     userId*: UserId ## Invoking user snowflake.
     guildId*: Option[GuildId] ## Guild snowflake when invoked in a guild.
+    channelId*: Option[ChannelId] ## Invocation channel, when Discord supplied
+                                  ## a channel identity.
     context*: InvocationContext ## Installation, surface, and effective
                                 ## permissions.
     locale*: Option[DiscordLocale] ## Selected language of the invoking user.
@@ -254,6 +259,8 @@ proc `%`*(invocation: CommandInvocation): JsonNode =
   }
   if invocation.guildId.isSome:
     result["guildId"] = %($invocation.guildId.get())
+  if invocation.channelId.isSome:
+    result["channelId"] = %($invocation.channelId.get())
 
 proc toJsonHook*(invocation: CommandInvocation): JsonNode =
   %invocation
@@ -922,6 +929,7 @@ proc initChatInputCommand*(
     ack = ackManual;
     autoDeferAfterMs = 2_000;
     ephemeral = true;
+    defaultMemberPermissions = none(Permissions);
     requiredBotPermissions = initDiscordBits[Permission]();
     nameLocalizations = initLocalizationMap();
     descriptionLocalizations = initLocalizationMap()): CommandSpec =
@@ -934,6 +942,7 @@ proc initChatInputCommand*(
     descriptionLocalizations: descriptionLocalizations,
     installs: installs, contexts: contexts, ack: ack,
     autoDeferAfterMs: autoDeferAfterMs, ephemeral: ephemeral,
+    defaultMemberPermissions: defaultMemberPermissions,
     requiredBotPermissions: requiredBotPermissions, options: @options)
   validate(result)
 
@@ -945,6 +954,7 @@ proc initContextMenuCommand*(
     ack = ackManual;
     autoDeferAfterMs = 2_000;
     ephemeral = true;
+    defaultMemberPermissions = none(Permissions);
     requiredBotPermissions = initDiscordBits[Permission]();
     nameLocalizations = initLocalizationMap()): CommandSpec =
   ## Builds and validates a user or message context-menu command schema.
@@ -958,6 +968,7 @@ proc initContextMenuCommand*(
     name: name, kind: kind, nameLocalizations: nameLocalizations,
     installs: installs, contexts: contexts, ack: ack,
     autoDeferAfterMs: autoDeferAfterMs, ephemeral: ephemeral,
+    defaultMemberPermissions: defaultMemberPermissions,
     requiredBotPermissions: requiredBotPermissions)
   validate(result)
 
@@ -1066,6 +1077,13 @@ proc reply*[S](context: CommandCtx[S], content: string,
   ## Selects a plain-content initial message; ingress confirms delivery later.
   appcontext.reply(context.requireResponseContext(), content, visibility)
 
+proc reply*[S](context: CommandCtx[S], draft: MessageDraft[V2];
+               visibility = vPublic;
+               allowedMentions = initAllowedMentions()): Future[void] =
+  ## Selects a validated Components V2 initial response.
+  appcontext.reply(context.requireResponseContext(), draft, visibility,
+    allowedMentions)
+
 proc deferReply*[S](context: CommandCtx[S],
                     visibility = vPublic): Future[void] =
   ## Selects a deferred response; ingress confirms delivery later.
@@ -1092,6 +1110,12 @@ proc editOriginal*[S](context: CommandCtx[S], body: sink JsonNode):
   ## Edits the original response after acknowledgement.
   appcontext.editOriginal(context.requireResponseContext(), body)
 
+proc editOriginal*[S](context: CommandCtx[S], draft: MessageDraft[V2];
+                      allowedMentions = initAllowedMentions()): Future[void] =
+  ## Edits or upgrades the original response to Components V2.
+  appcontext.editOriginal(context.requireResponseContext(), draft,
+    allowedMentions)
+
 proc followup*[S](context: CommandCtx[S], body: sink JsonNode,
                   visibility = vPublic): Future[void] =
   ## Sends a follow-up through ingress-owned transport.
@@ -1101,6 +1125,13 @@ proc followup*[S](context: CommandCtx[S], content: string,
                   visibility = vPublic): Future[void] =
   ## Sends a plain-content follow-up through ingress-owned transport.
   appcontext.followup(context.requireResponseContext(), content, visibility)
+
+proc followup*[S](context: CommandCtx[S], draft: MessageDraft[V2];
+                  visibility = vPublic;
+                  allowedMentions = initAllowedMentions()): Future[void] =
+  ## Sends a validated Components V2 follow-up.
+  appcontext.followup(context.requireResponseContext(), draft, visibility,
+    allowedMentions)
 
 func surface*[S](context: CommandCtx[S]): InteractionSurface =
   ## Returns the Discord surface where this command was invoked.
