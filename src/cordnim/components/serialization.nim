@@ -178,6 +178,7 @@ proc toJson*(draft: MessageDraft[V2]): JsonNode =
 
 proc toJson*(draft: MessageDraft[Legacy]): JsonNode =
   ## Serializes only fields legal on a legacy message.
+  draft.requireValid()
   result = newJObject()
   if draft.legacy.content.isSome:
     result["content"] = %draft.legacy.content.get()
@@ -185,7 +186,11 @@ proc toJson*(draft: MessageDraft[Legacy]): JsonNode =
     result["embeds"] = newJArray()
     for value in draft.legacy.embedsJson:
       result["embeds"].add(parseJson(value))
-  if draft.legacy.pollJson.isSome:
-    result["poll"] = parseJson(draft.legacy.pollJson.get())
   if draft.legacy.stickers.len != 0:
-    result["sticker_ids"] = %draft.legacy.stickers
+    result["sticker_ids"] = newJArray()
+    for stickerId in draft.legacy.stickers:
+      result["sticker_ids"].add(newJString($stickerId))
+  if draft.legacy.components.len != 0:
+    result["components"] = newJArray()
+    for component in draft.legacy.components:
+      result["components"].add(component.componentJson())

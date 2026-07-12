@@ -114,8 +114,8 @@ type
   LegacyPayload* = object ## Fields legal on a legacy Discord message.
     content*: Option[string] ## Message text.
     embedsJson*: seq[string] ## Raw serialized embeds retained by the alpha API.
-    pollJson*: Option[string] ## Raw serialized poll retained by the alpha API.
-    stickers*: seq[string] ## Sticker snowflakes as decimal strings.
+    stickers*: seq[StickerId] ## Stickers sent with the message.
+    components*: seq[ComponentNode] ## Up to five validated action rows.
 
   V2Payload* = object ## Root component tree for a Components V2 message.
     children*: seq[ComponentNode] ## Valid root-level nodes.
@@ -152,12 +152,17 @@ func `$`*(id: ComponentId): string =
   ## Formats a component ID as an unsigned decimal integer.
   $uint32(id)
 
-func legacyMessage*(content = ""): MessageDraft[Legacy] =
+func legacyMessage*(content = "";
+                    components: seq[ComponentNode] = @[];
+                    stickerIds: seq[StickerId] = @[];
+                    embedsJson: seq[string] = @[]): MessageDraft[Legacy] =
   ## Creates a legacy draft. Empty content remains omitted.
-  if content.len == 0:
-    MessageDraft[Legacy](legacy: LegacyPayload(content: none(string)))
-  else:
-    MessageDraft[Legacy](legacy: LegacyPayload(content: some(content)))
+  MessageDraft[Legacy](legacy: LegacyPayload(
+    content: if content.len == 0: none(string) else: some(content),
+    embedsJson: embedsJson,
+    stickers: stickerIds,
+    components: components,
+  ))
 
 func component*(kind: MessageComponentKind, text = "", customId = "",
                 url = "", disabled = false,

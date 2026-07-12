@@ -55,6 +55,11 @@ suite "Components V2":
     )))
     check not modalOnly.validate().valid
 
+  test "component strings must be valid UTF-8":
+    let validation = v2Draft(textDisplay("\xFF")).validate()
+    check not validation.valid
+    check validation.problems[0].kind == cpkInvalidText
+
   test "legacy handles only upgrade in one direction":
     let legacy = messageHandle[Legacy](
       toId(ChannelId, 1), toId(MessageId, 2))

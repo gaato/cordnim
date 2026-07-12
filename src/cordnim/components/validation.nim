@@ -6,6 +6,7 @@ import cordnim/core/ids
 import ./model
 
 const
+  MaxLegacyActionRows* = 5 ## Maximum top-level rows in a legacy message.
   MaxMessageComponents* = 40 ## Discord's total Components V2 node limit.
   MaxMessageRootComponents* = 40 ## Maximum root entries in a V2 message.
   MaxContainerComponents* = 40 ## Maximum direct children in a container.
@@ -29,7 +30,8 @@ type
     cpkDuplicateCustomId, ## Interactive IDs collide within one message.
     cpkDuplicateId, ## Nonzero integer component IDs collide in one message.
     cpkInvalidMedia, ## Media metadata violates Discord limits.
-    cpkInvalidStyle ## Style-specific fields are inconsistent.
+    cpkInvalidStyle, ## Style-specific fields are inconsistent.
+    cpkInvalidText ## A component string is not valid UTF-8.
 
   ComponentProblem* = object ## One validation failure with a stable tree path.
     kind*: ComponentProblemKind ## Machine-readable category.
@@ -50,6 +52,12 @@ proc addProblem(validation: var ComponentValidation,
     path: path,
     message: message
   ))
+
+proc validateUtf8Field(value, field, path: string;
+                       validation: var ComponentValidation) =
+  if value.validateUtf8 != -1:
+    validation.addProblem(cpkInvalidText, path,
+      field & " must be valid UTF-8")
 
 proc countComponentsImpl(node: ComponentNode,
                          visiting: var HashSet[pointer]): int =
@@ -100,6 +108,22 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
     visiting.excl identity
   if node.kind != mckMediaItem:
     inc total
+
+  node.text.validateUtf8Field("text", path, validation)
+  node.customId.validateUtf8Field("custom_id", path, validation)
+  node.url.validateUtf8Field("url", path, validation)
+  node.placeholder.validateUtf8Field("placeholder", path, validation)
+  node.description.validateUtf8Field("description", path, validation)
+  if node.emoji.isSome:
+    node.emoji.get.name.validateUtf8Field("emoji name", path, validation)
+  for option in node.options:
+    option.label.validateUtf8Field("select option label", path, validation)
+    option.value.validateUtf8Field("select option value", path, validation)
+    option.description.validateUtf8Field(
+      "select option description", path, validation)
+    if option.emoji.isSome:
+      option.emoji.get.name.validateUtf8Field(
+        "select option emoji name", path, validation)
 
   if node.kind == mckMediaItem and node.id.isSome:
     validation.addProblem(cpkInvalidMedia, path,
@@ -330,6 +354,14 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
       cpkInvalidChild, path,
       "component kind is not legal inside a container"
     )
+  if parent.isSome and parent.get() == mckActionRow and
+      node.kind != mckButton and not node.kind.isSelect:
+    validation.addProblem(cpkInvalidChild, path,
+      "action rows accept only buttons or selects")
+  if parent.isSome and parent.get() notin {
+      mckActionRow, mckContainer, mckMediaGallery, mckSection}:
+    validation.addProblem(cpkInvalidChild, path,
+      "component kind cannot contain child components")
 
   for index, child in node.children:
     child.validateNode(some(node.kind), path & "." & $index, validation,
@@ -367,8 +399,31 @@ proc validate*(draft: MessageDraft[V2]): ComponentValidation =
         $MaxMessageComponents
     )
 
+proc validate*(draft: MessageDraft[Legacy]): ComponentValidation =
+  ## Validates the action-row subset available to legacy messages.
+  var total = 0
+  var customIds: HashSet[string]
+  var componentIds: HashSet[uint32]
+  var visiting: HashSet[pointer]
+  if draft.legacy.components.len > MaxLegacyActionRows:
+    result.addProblem(cpkTooManyComponents, "$",
+      "legacy message has more than " & $MaxLegacyActionRows & " action rows")
+  for index, node in draft.legacy.components:
+    if node.isNil or node.kind != mckActionRow:
+      result.addProblem(cpkInvalidRoot, $index,
+        "legacy message roots must be action rows")
+    node.validateNode(none(MessageComponentKind), $index, result, customIds,
+      componentIds, visiting, total)
+
 proc requireValid*(draft: MessageDraft[V2]) =
   ## Raises `ValueError` with the first Discord constraint when invalid.
+  let validation = draft.validate()
+  if not validation.valid:
+    let problem = validation.problems[0]
+    raise newException(ValueError, problem.path & ": " & problem.message)
+
+proc requireValid*(draft: MessageDraft[Legacy]) =
+  ## Raises `ValueError` with the first legacy component constraint violated.
   let validation = draft.validate()
   if not validation.valid:
     let problem = validation.problems[0]
