@@ -4,9 +4,68 @@ Cordnim's Gateway layer owns connection and shard mechanics while leaving event
 policy and application handlers injectable. HTTP-only interaction applications
 do not need it.
 
+## Application API
+
+Most applications should import `cordnim/bot`. The high-level runtime owns the
+authenticated REST client, `/gateway/bot` lookup, local shard coordination,
+Chronos WebSockets, interaction dispatcher, and typed event router. Construction
+does no network I/O. `app.run()` starts and closes the complete component.
+
+```nim
+import std/os
+
+import chronos
+import cordnim
+import cordnim/bot
+
+let app = newDiscordApp(
+  services,
+  initAppConfig(
+    ingressGateway,
+    gatewaySubscriptions({giGuildMessages, giMessageContent})
+  ),
+  commands
+)
+
+let bot = newGatewayBotRuntime(
+  app,
+  initSecret[BotToken](getEnv("DISCORD_BOT_TOKEN")),
+  singleProcessGateway()
+)
+
+bot.events.onMessageCreate proc(
+    ctx: GatewayEventContext[Services]; message: Message
+): Future[void] {.async.} =
+  await recordMessage(ctx.services, message)
+
+waitFor app.run()
+```
+
+`bot.interactions` exposes the shared command, component, modal, and
+autocomplete dispatcher when the application uses Gateway interaction ingress.
+`bot.rest` exposes the owned semantic REST client during application handlers.
+The shard runner intercepts `INTERACTION_CREATE` before the generic event queue,
+so interaction acknowledgement work keeps its independent concurrency bound.
+
+Typed registrations cover every semantic event decoded by
+`cordnim/gateway/events`. A handler receives its event payload and a
+`GatewayEventContext[S]` with app services, shard, sequence, partition, and
+receive time. `onUnhandled` receives decoded but unregistered events.
+`onUnknown` receives future Discord event names through `UnknownGatewayEvent`.
+Duplicate registration raises `ValueError` instead of replacing a handler.
+
+Choose coordination at construction. `singleProcessGateway()` uses the
+in-memory fenced adapter and rejects `processCount > 1`.
+`externalGateway(coordination)` accepts a caller-supplied distributed backend.
+`initGatewayBotOptions` exposes shard selection, bounded event policy, restart
+budget, tuning, transport limits, observers, and injectable production
+dependencies. Tests may inject `gatewayBotInfo`, clock, sleeper, jitter, and a
+Gateway transport factory without opening Discord connections.
+
 ## Assembly boundary
 
-A Gateway deployment supplies these inputs:
+The lower-level assembly API remains available for custom runtimes. A deployment
+using it supplies these inputs:
 
 - the initial Gateway URL and Discord session-start limit obtained through REST;
 - a `ShardPlan` describing the shard IDs owned by this process;
@@ -16,8 +75,9 @@ A Gateway deployment supplies these inputs:
 - a bounded `GatewayDispatchRuntime` and event handler for each shard;
 - token, intents, IDENTIFY properties, timeouts, clocks, sleep, and jitter.
 
-Production transport uses `newChronosGatewayDriver`. Tests can inject the same
-driver contract without opening a socket. The runner takes the initial URL as a
+Production composition uses `chronosGatewayClock`, `chronosGatewaySleep`,
+`secureGatewayJitter`, and `chronosGatewayTransportFactory`. Tests can inject the
+same contracts without opening a socket. The runner takes the initial URL as a
 value and never hides a REST lookup inside connection startup.
 
 `GatewayRuntime` supervises the runners produced for one shard plan. An

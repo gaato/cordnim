@@ -75,6 +75,13 @@ Use the semantic model tests for field/nullability failures and the runner tests
 for ownership or reconnect behavior; combining both in one large fixture makes
 failures harder to locate.
 
+`initGatewayBotOptions` exposes the same dependency seams at the application
+layer. Set `gatewayBotInfo` to a decoded fixture and inject a scripted transport
+factory, manual clock, sleeper, and jitter. This drives `app.run()` through
+bootstrap, shard construction, dispatch, and shutdown without REST or WebSocket
+network I/O. Keep `singleProcessGateway()` for one-process plans; use an explicit
+test coordination facade when exercising multi-process shard assignments.
+
 ## Application harness and time
 
 `AppHarness` dispatches commands through a real `DiscordApp` with deterministic

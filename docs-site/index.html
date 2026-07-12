@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Cordnim documentation for typed Discord applications in Nim.">
+  <title>Cordnim documentation</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="site-header">
+    <nav class="nav-shell" aria-label="Primary navigation">
+      <a class="wordmark" href="./" aria-label="Cordnim documentation home">cordnim</a>
+      <div class="nav-links">
+        <a href="guide/overview.html">Guide</a>
+        <a href="api/cordnim.html">API</a>
+        <a href="api/voice/index.html">Voice</a>
+        <a href="https://github.com/gaato/cordnim">GitHub</a>
+      </div>
+    </nav>
+  </header>
+
+  <main id="content" tabindex="-1">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Discord applications in Nim</p>
+        <h1>Build Discord bots in Nim.</h1>
+        <p class="lede">Typed interactions, semantic REST, and resumable Gateway shards under one explicit lifecycle.</p>
+        <div class="actions">
+          <a class="button primary" href="guide/overview.html">Read the guide</a>
+          <a class="button secondary" href="api/cordnim/bot.html">Browse bot API</a>
+        </div>
+      </div>
+      <figure class="code-figure">
+        <figcaption>A complete Gateway runtime</figcaption>
+        <pre tabindex="0"><code><span class="kw">import</span> chronos, cordnim
+<span class="kw">import</span> cordnim/bot
+
+<span class="kw">let</span> app = newDiscordApp(
+  services,
+  initAppConfig(
+    ingressGateway,
+    gatewaySubscriptions({giGuildMessages})
+  ),
+  commands
+)
+
+<span class="kw">let</span> bot = newGatewayBotRuntime(
+  app, token, singleProcessGateway()
+)
+
+bot.events.onMessageCreate(handleMessage)
+waitFor app.run()</code></pre>
+      </figure>
+    </section>
+
+    <section class="runtime-section" aria-labelledby="runtime-heading">
+      <div>
+        <h2 id="runtime-heading">One owner from startup to shutdown</h2>
+        <p>Cordnim starts REST before Gateway bootstrap, keeps interaction ACK work separate from event queues, and joins retained tasks during close.</p>
+      </div>
+      <ol class="runtime-flow">
+        <li><strong>Declare</strong><span>Commands, intents, and typed handlers</span></li>
+        <li><strong>Attach</strong><span>HTTP, Gateway, or a hybrid runtime</span></li>
+        <li><strong>Run</strong><span>One lifecycle owns every transport</span></li>
+      </ol>
+    </section>
+
+    <section class="layers" aria-labelledby="layers-heading">
+      <h2 id="layers-heading">Choose the layer you need</h2>
+      <div class="layer-grid">
+        <article class="layer-primary">
+          <h3>Application API</h3>
+          <p>Define commands, persistent components, modal forms, autocomplete, and typed Gateway events against one services value.</p>
+          <a href="guide/interactions.html">Interaction guide</a>
+        </article>
+        <article>
+          <h3>Semantic REST</h3>
+          <p>Use typed resources, explicit patch fields, rate-aware scheduling, and operation-specific retry rules.</p>
+          <a href="guide/api.html">REST API guide</a>
+        </article>
+        <article>
+          <h3>Runtime control</h3>
+          <p>Drop to shard runners, dispatch policies, coordination, and generated raw routes when your deployment needs them.</p>
+          <a href="guide/gateway.html">Gateway guide</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="reference" aria-labelledby="reference-heading">
+      <div>
+        <h2 id="reference-heading">Reference without the scavenger hunt</h2>
+        <p>The complete generated API lives under <code>/api/</code>. Human guides keep package boundaries and operational choices in context.</p>
+      </div>
+      <nav class="reference-links" aria-label="Documentation sections">
+        <a href="guide/commands.html"><span>Commands</span><small>schemas and sync</small></a>
+        <a href="guide/components.html"><span>Components</span><small>V2 and forms</small></a>
+        <a href="guide/testing.html"><span>Testing</span><small>scripted transports</small></a>
+        <a href="guide/security.html"><span>Security</span><small>credentials and trust</small></a>
+        <a href="guide/architecture.html"><span>Architecture</span><small>ownership boundaries</small></a>
+        <a href="api/theindex.html"><span>API index</span><small>all public symbols</small></a>
+      </nav>
+    </section>
+  </main>
+
+  <footer>
+    <p>Cordnim is licensed under MPL-2.0.</p>
+    <a href="https://github.com/gaato/cordnim">Source on GitHub</a>
+  </footer>
+</body>
+</html>

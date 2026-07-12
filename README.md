@@ -11,6 +11,7 @@ cordnim 0.1.0 is a preview release. Public APIs may change between releases.
 | Import | Purpose |
 | --- | --- |
 | `cordnim` | Build applications, commands, components, modals, and interaction handlers |
+| `cordnim/bot` | Wire a complete Gateway bot with owned REST, interactions, and typed events |
 | `cordnim/api` | Call Discord REST endpoints with typed request and response values |
 | `cordnim/models` | Decode Discord resources while retaining unknown fields |
 | `cordnim/gateway` | Run Gateway sessions, shards, event dispatch, and caching |
@@ -83,6 +84,47 @@ the same app. `ctx.reply` sends the initial interaction response;
 `ctx.editOriginal` and `ctx.followup` are available afterward. The
 [interactions guide](docs/interactions.md) covers routing, deferral, and response
 lifecycle in detail.
+
+## Run a Gateway bot
+
+`newGatewayBotRuntime` owns REST bootstrap, WebSocket shards, interaction
+callbacks, and shutdown. Register typed event and interaction handlers before
+calling `app.run()`.
+
+```nim
+import std/os
+
+import chronos
+import cordnim
+import cordnim/bot
+
+type Services = object
+  greeting: string
+
+let app = newDiscordApp(
+  Services(greeting: "Hello"),
+  initAppConfig(
+    ingressGateway,
+    gatewaySubscriptions({giGuildMessages, giMessageContent})
+  ),
+  initCommandSet[Services]()
+)
+
+let token = initSecret[BotToken](getEnv("DISCORD_BOT_TOKEN"))
+let bot = newGatewayBotRuntime(app, token, singleProcessGateway())
+
+bot.events.onMessageCreate proc(
+    ctx: GatewayEventContext[Services]; message: Message
+): Future[void] {.async.} =
+  echo ctx.services.greeting, ": ", message.content
+
+waitFor app.run()
+```
+
+`singleProcessGateway()` guards the in-memory coordination boundary. Supply
+`externalGateway(yourCoordination)` before setting `processCount` above one.
+The event policy, shard plan, runner timing, observers, and production adapters
+remain available through `initGatewayBotOptions`.
 
 ## Components and persistent routes
 

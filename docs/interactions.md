@@ -39,6 +39,25 @@ runtime.dispatcher.registerAutocomplete(
 Registration and dispatch are sealed when dispatcher shutdown starts. `close`
 cancels and joins retained work before returning.
 
+Gateway applications obtain the same dispatcher from the high-level bot
+runtime:
+
+```nim
+let bot = newGatewayBotRuntime(
+  app, token, singleProcessGateway(),
+  routeEnvelope = some(routeCodec)
+)
+
+bot.interactions.registerComponent(buttonCodec, handleButton)
+bot.interactions.registerModal(formCodec, handleForm)
+bot.interactions.registerAutocomplete(
+  initCommandKey(ckChatInput, "search"), "query", completeQuery)
+```
+
+The runtime sends the initial callback through its owned REST client. The shard
+runner keeps interaction payloads out of the generic `DispatchEvent` feed and
+runs them on an independent bounded worker set.
+
 ## HTTP verification
 
 `InteractionHttpServer` reads a bounded body, checks timestamp skew, verifies

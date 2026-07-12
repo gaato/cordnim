@@ -154,20 +154,11 @@ jobs:
           python3 tools/check_doc_links.py htmldocs
           python3 tools/check_doc_links.py voice/htmldocs
 
-      # Keep the generated core layout intact and mount Voice below /voice/.
-      # Pages serves index.html, while Nim's generated theindex.html remains
-      # available at its original URL.
+      # Publish a human guide at the root and keep complete Nimdoc under /api/.
       - name: Stage GitHub Pages site
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        shell: bash
         run: |
-          set -euo pipefail
-          mkdir -p build/pages/voice
-          cp -R htmldocs/. build/pages/
-          cp -R voice/htmldocs/. build/pages/voice/
-          cp build/pages/theindex.html build/pages/index.html
-          cp build/pages/voice/theindex.html build/pages/voice/index.html
-          touch build/pages/.nojekyll
+          python3 tools/build_pages.py
           python3 tools/check_doc_links.py build/pages
 
       - name: Upload GitHub Pages artifact
