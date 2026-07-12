@@ -166,7 +166,12 @@ proc isDefaultCommandField(command: JsonNode, name: string): bool =
   case name
   of "nsfw": node.kind == JBool and not node.getBool()
   of "default_permission": node.kind == JBool and node.getBool()
-  of "default_member_permissions", "dm_permission": node.kind == JNull
+  of "default_member_permissions": node.kind == JNull
+  of "dm_permission":
+    # Discord still echoes the deprecated field as true when it was omitted.
+    # True is the documented default, so it must not make a freshly applied
+    # manifest appear dirty; false remains a managed restriction.
+    node.kind == JNull or (node.kind == JBool and node.getBool())
   of "name_localizations", "description_localizations":
     node.kind == JNull or (node.kind == JObject and node.len == 0)
   of "options": node.kind == JArray and node.len == 0

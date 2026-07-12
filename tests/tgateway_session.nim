@@ -69,6 +69,21 @@ block identify_buckets_and_budget:
   doAssert reset.kind == identifyAcquired
   doAssert coordinator.remaining == 1
 
+block zero_reset_duration_does_not_refill_without_refresh:
+  var coordinator = initIdentifyCoordinator(
+    SessionStartLimit(
+      total: 1,
+      remaining: 1,
+      resetAfterMs: 0,
+      maxConcurrency: 1,
+    ),
+    nowMs = 100,
+  )
+  doAssert coordinator.tryAcquire(ShardId(0), 100).kind == identifyAcquired
+  let exhausted = coordinator.tryAcquire(ShardId(0), 1_000_000)
+  doAssert exhausted.kind == identifyBudgetExhausted
+  doAssert exhausted.retryAtMs == high(int64)
+
 block shard_partitioning:
   let p0 = planShards(10, 0, 3)
   let p1 = planShards(10, 1, 3)

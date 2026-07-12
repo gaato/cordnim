@@ -9,7 +9,8 @@ type
   SessionStartLimit* = object ## Discord's `/gateway/bot` session-start limits.
     total*: int ## IDENTIFY allowance available after a full reset.
     remaining*: int ## IDENTIFY operations left in the current window.
-    resetAfterMs*: int64 ## Milliseconds until Discord resets the allowance.
+    resetAfterMs*: int64 ## Milliseconds until Discord resets the allowance;
+                         ## zero means no future deadline was supplied.
     maxConcurrency*: uint16 ## Number of independent IDENTIFY buckets.
 
   IdentifyLease* = object ## Successful reservation of one IDENTIFY operation.
@@ -48,10 +49,10 @@ proc validate(limit: SessionStartLimit) =
       ValueError,
       "session start remaining must be within total",
     )
-  if limit.resetAfterMs <= 0:
+  if limit.resetAfterMs < 0:
     raise newException(
       ValueError,
-      "session start reset duration must be greater than zero",
+      "session start reset duration must not be negative",
     )
   if limit.maxConcurrency == 0:
     raise newException(ValueError, "max concurrency must be at least one")
@@ -64,10 +65,13 @@ proc initIdentifyCoordinator*(
   ##
   ## Raises `ValueError` for internally inconsistent limit values.
   validate(limit)
+  let resetAtMs =
+    if limit.resetAfterMs == 0: high(int64)
+    else: nowMs + limit.resetAfterMs
   IdentifyCoordinator(
     total: limit.total,
     remaining: limit.remaining,
-    resetAtMs: nowMs + limit.resetAfterMs,
+    resetAtMs: resetAtMs,
     resetAfterMs: limit.resetAfterMs,
     maxConcurrency: limit.maxConcurrency,
     bucketNextMs: newSeq[int64](int(limit.maxConcurrency)),
@@ -82,7 +86,9 @@ proc refresh*(
   validate(limit)
   coordinator.total = limit.total
   coordinator.remaining = limit.remaining
-  coordinator.resetAtMs = nowMs + limit.resetAfterMs
+  coordinator.resetAtMs =
+    if limit.resetAfterMs == 0: high(int64)
+    else: nowMs + limit.resetAfterMs
   coordinator.resetAfterMs = limit.resetAfterMs
   # Keep per-bucket cooldowns when the modulo topology is unchanged. Refreshing
   # the global counters must not enable an early IDENTIFY burst in a live
@@ -95,7 +101,7 @@ proc resetBudgetIfNeeded(
     coordinator: var IdentifyCoordinator;
     nowMs: int64,
 ) {.raises: [].} =
-  if nowMs >= coordinator.resetAtMs:
+  if coordinator.resetAfterMs > 0 and nowMs >= coordinator.resetAtMs:
     coordinator.remaining = coordinator.total
     coordinator.resetAtMs = nowMs + coordinator.resetAfterMs
 

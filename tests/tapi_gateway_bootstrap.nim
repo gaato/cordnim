@@ -61,6 +61,13 @@ suite "Gateway bootstrap API":
     expect DecodeError:
       discard decodeGatewayBotInfo(malformed)
 
+  test "accepts Discord's fully-reset zero reset duration":
+    var fullyReset = validGatewayBot.copy()
+    fullyReset["session_start_limit"]["remaining"] = %1000
+    fullyReset["session_start_limit"]["reset_after"] = %0
+    let info = decodeGatewayBotInfo(fullyReset)
+    check info.sessionStartLimit.resetAfterMs == 0
+
   test "submits a safe retryable route and returns a shard plan":
     let probe = RestProbe(response: TransportResponse(
       status: 200, body: bytes($validGatewayBot)))

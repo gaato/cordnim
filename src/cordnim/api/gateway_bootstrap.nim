@@ -80,7 +80,7 @@ proc decodeGatewayBotInfo*(document: JsonNode): GatewayBotInfo =
   if total < 0 or total > BiggestInt(high(int)) or remaining < 0 or
       remaining > total or remaining > BiggestInt(high(int)):
     raise decodeFailure("Gateway bot session-start counters are invalid")
-  if resetAfter <= 0 or resetAfter > BiggestInt(high(int64)):
+  if resetAfter < 0 or resetAfter > BiggestInt(high(int64)):
     raise decodeFailure(
       "Gateway bot session-start reset duration is invalid")
   if maxConcurrency < 1 or maxConcurrency > BiggestInt(high(uint16)):

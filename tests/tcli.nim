@@ -66,6 +66,28 @@ suite "cordnim CLI":
       "commands", "diff", "--current", currentPath, "--desired", desiredPath
     ]) == 0
 
+  test "ignores Discord's default true dm_permission during diff":
+    let directory = getTempDir() / "cordnim-cli-tests"
+    createDir(directory)
+    let currentPath = directory / "current-default-dm.json"
+    let desiredPath = directory / "desired-default-dm.json"
+    writeFile(currentPath, $(%*{
+      "commands": [{
+        "id": "1", "application_id": "2", "version": "3",
+        "name": "ping", "type": 1, "description": "Ping",
+        "dm_permission": true, "nsfw": false,
+        "default_member_permissions": newJNull()
+      }]
+    }))
+    writeFile(desiredPath, $(%*{
+      "commands": [{
+        "name": "ping", "type": 1, "description": "Ping"
+      }]
+    }))
+    check runCli(@[
+      "commands", "diff", "--current", currentPath, "--desired", desiredPath
+    ]) == 0
+
   test "accepts the same command name across different kinds":
     let path = getTempDir() / "cordnim-cli-crosskind.json"
     writeFile(path, $(%*{
