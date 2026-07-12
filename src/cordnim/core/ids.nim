@@ -24,6 +24,7 @@ type
   StageInstanceKind* = object ## Type marker for stage instances.
   StickerKind* = object ## Type marker for stickers.
   SubscriptionKind* = object ## Type marker for SKU subscriptions.
+  TeamKind* = object ## Type marker for application teams.
   UserKind* = object ## Type marker for Discord users.
   WebhookKind* = object ## Type marker for webhooks.
 
@@ -45,6 +46,7 @@ type
   StageInstanceId* = Id[StageInstanceKind] ## Kind-safe stage-instance ID.
   StickerId* = Id[StickerKind] ## Kind-safe sticker ID.
   SubscriptionId* = Id[SubscriptionKind] ## Kind-safe subscription ID.
+  TeamId* = Id[TeamKind] ## Kind-safe application-team ID.
   UserId* = Id[UserKind] ## Kind-safe user ID.
   WebhookId* = Id[WebhookKind] ## Kind-safe webhook ID.
 
