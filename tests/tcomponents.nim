@@ -1,4 +1,4 @@
-import std/unittest
+import std/[strutils, unittest]
 
 import cordnim/components
 import cordnim/core/ids
@@ -65,3 +65,12 @@ suite "persistent component routes":
     var tampered = encoded
     tampered[4] = if tampered[4] == 'A': 'B' else: 'A'
     check not codec.decodeRoute(tampered, 1).ok
+
+  test "malformed encodings are rejected":
+    let codec = RouteCodec(
+      activeKeyId: 1,
+      keys: @[RouteSigningKey(id: 1, material: @[byte 4, 5])],
+      signer: testSigner
+    )
+    check codec.decodeRoute("c.A@AA\n", 1).error == rdeMalformed
+    check codec.decodeRoute("c." & repeat('A', 99), 1).error == rdeMalformed

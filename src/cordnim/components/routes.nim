@@ -9,6 +9,7 @@ import std/[base64, options, strutils]
 const
   RouteSignatureBytes* = 16 ## Truncated HMAC bytes carried in `custom_id`.
   RouteHeaderBytes = 12
+  MaxCustomIdBytes = 100
 
 type
   RouteSigner* = proc(key, message: openArray[byte]): array[32, byte]
@@ -70,6 +71,14 @@ func withPadding(value: string): string =
   while result.len mod 4 != 0:
     result.add '='
 
+func hasBase64UrlShape(value: string): bool =
+  if value.len == 0 or value.len mod 4 == 1:
+    return false
+  for item in value:
+    if item notin {'A'..'Z', 'a'..'z', '0'..'9', '-', '_'}:
+      return false
+  true
+
 func constantTimeEqual(a, b: openArray[byte]): bool =
   if a.len != b.len:
     return false
@@ -106,7 +115,7 @@ proc encodeRoute*(codec: RouteCodec, routeTypeId: uint16, version: uint8,
   for index in 0..<RouteSignatureBytes:
     framed.add digest[index]
   result = "c." & withoutPadding(base64.encode(framed, safe = true))
-  if result.len > 100:
+  if result.len > MaxCustomIdBytes:
     raise newException(ValueError, "encoded component route exceeds 100 bytes")
 
 proc decodeRoute*(codec: RouteCodec, value: string,
@@ -114,12 +123,19 @@ proc decodeRoute*(codec: RouteCodec, value: string,
   ## Authenticates `value` before exposing its route payload.
   if codec.signer.isNil:
     return RouteDecodeResult(ok: false, error: rdeSignerUnavailable)
-  if value.len < 3 or not value.startsWith("c."):
+  if value.len < 3 or value.len > MaxCustomIdBytes or
+      not value.startsWith("c."):
+    return RouteDecodeResult(ok: false, error: rdeMalformed)
+  let encoded = value[2..^1]
+  # Reject non-canonical external input before the standard decoder allocates.
+  if not encoded.hasBase64UrlShape:
     return RouteDecodeResult(ok: false, error: rdeMalformed)
   var decoded: string
   try:
-    decoded = base64.decode(withPadding(value[2..^1]))
+    decoded = base64.decode(withPadding(encoded))
   except ValueError:
+    return RouteDecodeResult(ok: false, error: rdeMalformed)
+  if withoutPadding(base64.encode(decoded, safe = true)) != encoded:
     return RouteDecodeResult(ok: false, error: rdeMalformed)
   if decoded.len < RouteHeaderBytes + RouteSignatureBytes:
     return RouteDecodeResult(ok: false, error: rdeMalformed)

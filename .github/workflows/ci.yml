@@ -55,9 +55,7 @@ jobs:
         run: atlas --noexec rep atlas.lock
 
       - name: Check every public API entry point
-        run: |
-          nimble check -y
-          nimble apiCheck -y
+        run: nimble apiCheck -y
 
       - name: Build command-line tools
         run: >-

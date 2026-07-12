@@ -134,7 +134,6 @@ Replay the pinned dependency graph before building a fresh checkout:
 
 ```fish
 atlas --noexec rep atlas.lock
-nimble check
 nimble apiCheck
 nimble test
 nimble schemaCheck

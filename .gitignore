@@ -14,6 +14,7 @@ deps/*
 tests/fixtures/private/
 fuzz/corpus/component_routes/*
 !fuzz/corpus/component_routes/framed_prefix
+!fuzz/corpus/component_routes/invalid_alphabet
 fuzz/corpus/interaction_verification/*
 !fuzz/corpus/interaction_verification/valid_shape
 fuzz/corpus/raw_json/*
