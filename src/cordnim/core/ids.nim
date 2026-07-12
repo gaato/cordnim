@@ -14,6 +14,7 @@ type
   EmojiKind* = object ## Type marker for custom emoji.
   EntitlementKind* = object ## Type marker for application entitlements.
   GuildKind* = object ## Type marker for guilds.
+  ForumTagKind* = object ## Type marker for forum and media channel tags.
   IntegrationKind* = object ## Type marker for guild integrations.
   InteractionKind* = object ## Type marker for interactions.
   MessageKind* = object ## Type marker for messages.
@@ -36,6 +37,7 @@ type
   EmojiId* = Id[EmojiKind] ## Kind-safe custom-emoji ID.
   EntitlementId* = Id[EntitlementKind] ## Kind-safe entitlement ID.
   GuildId* = Id[GuildKind] ## Kind-safe guild ID.
+  ForumTagId* = Id[ForumTagKind] ## Kind-safe forum or media channel tag ID.
   IntegrationId* = Id[IntegrationKind] ## Kind-safe integration ID.
   InteractionId* = Id[InteractionKind] ## Kind-safe interaction ID.
   MessageId* = Id[MessageKind] ## Kind-safe message ID.

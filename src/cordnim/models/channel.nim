@@ -5,15 +5,14 @@ import std/[json, options]
 import ./common
 import ./user
 import ./member
+import ./message
 
 export common
 export user
 export member
+export message
 
 type
-  ForumTagKind* = object ## Type marker for forum tag identifiers.
-  ForumTagId* = Id[ForumTagKind] ## Kind-safe forum tag snowflake.
-
   ChannelType* = enum ## Discord channel and thread kinds.
     ctGuildText = 0 ## Text channel within a guild.
     ctDm = 1 ## Direct message between two users.
@@ -70,6 +69,19 @@ type
     joinTimestamp*: Timestamp ## When the user last joined the thread.
     flags*: int64 ## User-thread notification setting bits.
     member*: Option[GuildMember] ## The user's guild member, when requested.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the membership.
+
+  ThreadListing* = object ## A page of active or archived threads.
+    threads*: seq[Channel] ## Threads returned by the listing operation.
+    members*: seq[ThreadMember] ## Membership records accompanying the threads.
+    hasMore*: bool ## Whether another archived-thread page remains.
+    firstMessages*: seq[Message] ## Forum starter messages, when included.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the listing.
+
+  FollowedChannel* = object ## Result of following an announcement channel.
+    channelId*: ChannelId ## Destination channel receiving published messages.
+    webhookId*: WebhookId ## Webhook Discord created for the follow.
+    snapshot: DiscordSnapshot ## Retained decode evidence for the result.
 
   Channel* = object ## A decoded Discord channel, thread, or forum.
     id*: ChannelId ## Unique snowflake identity of the channel.
@@ -145,7 +157,11 @@ proc decodeThreadMetadata(node: JsonNode): ThreadMetadata =
   result.createTimestamp = optTimestamp(
     obj, "create_timestamp", "channel.thread_metadata")
 
-proc decodeThreadMember(node: JsonNode): ThreadMember =
+proc decodeThreadMember*(node: JsonNode): ThreadMember =
+  ## Decodes the context-neutral thread-member object.
+  ##
+  ## `id` and `user_id` may be absent on records embedded in `GUILD_CREATE`.
+  ## REST endpoints should use `decodeThreadMemberResponse` instead.
   let obj = ensureObject(node, "channel.member")
   # `id`, `user_id`, and `member` are omitted on GUILD_CREATE thread members and
   # are non-null when present; `join_timestamp` and `flags` are always present.
@@ -159,6 +175,15 @@ proc decodeThreadMember(node: JsonNode): ThreadMember =
   let member = optNonNullObject(obj, "member", "channel.member")
   if member.isSome:
     result.member = some(decodeGuildMember(member.get))
+  result.snapshot = initSnapshot(obj,
+    ["id", "user_id", "join_timestamp", "flags", "member"])
+
+proc decodeThreadMemberResponse*(node: JsonNode): ThreadMember =
+  ## Decodes the strict pinned REST thread-member response.
+  let obj = ensureObject(node, "thread member")
+  requireNonNull(obj, "id", "thread member", {JString})
+  requireNonNull(obj, "user_id", "thread member", {JString})
+  result = decodeThreadMember(node)
 
 proc decodeForumTag(node: JsonNode): ForumTag =
   let obj = ensureObject(node, "channel.forum_tag")
@@ -327,6 +352,37 @@ proc decodeChannelResponse*(node: JsonNode): Channel =
   result = decodeChannel(node)
   enforceChannelRequired(ensureObject(node, "channel"), result.kind.toRaw)
 
+proc decodeThreadListing*(node: JsonNode): ThreadListing =
+  ## Decodes the strict thread-listing response used by active and archived
+  ## thread endpoints.
+  let obj = ensureObject(node, "thread listing")
+  for item in asArray(requireField(obj, "threads", "thread listing"),
+      "thread listing.threads"):
+    result.threads.add(decodeChannelResponse(item))
+  for item in asArray(requireField(obj, "members", "thread listing"),
+      "thread listing.members"):
+    result.members.add(decodeThreadMemberResponse(item))
+  result.hasMore = asBool(requireField(obj, "has_more", "thread listing"),
+    "thread listing.has_more")
+  let firstMessages = optNonNullArray(
+    obj, "first_messages", "thread listing")
+  if firstMessages.isSome:
+    for item in firstMessages.get:
+      result.firstMessages.add(decodeMessage(item))
+  result.snapshot = initSnapshot(obj,
+    ["threads", "members", "has_more", "first_messages"])
+
+proc decodeFollowedChannel*(node: JsonNode): FollowedChannel =
+  ## Decodes the result of following an announcement channel.
+  let obj = ensureObject(node, "followed channel")
+  result.channelId = decodeId(ChannelId,
+    requireField(obj, "channel_id", "followed channel"),
+    "followed channel.channel_id")
+  result.webhookId = decodeId(WebhookId,
+    requireField(obj, "webhook_id", "followed channel"),
+    "followed channel.webhook_id")
+  result.snapshot = initSnapshot(obj, ["channel_id", "webhook_id"])
+
 proc parseChannel*(text: string): Channel =
   ## Decodes a Discord channel (base contract) from a JSON document string.
   decodeChannel(parseJsonObject(text, "channel"))
@@ -335,6 +391,18 @@ proc parseChannelResponse*(text: string): Channel =
   ## Decodes a channel under the strict REST contract from a JSON document.
   decodeChannelResponse(parseJsonObject(text, "channel"))
 
+proc parseThreadMemberResponse*(text: string): ThreadMember =
+  ## Decodes a strict REST thread-member response from a JSON document.
+  decodeThreadMemberResponse(parseJsonObject(text, "thread member"))
+
+proc parseThreadListing*(text: string): ThreadListing =
+  ## Decodes a thread listing from a JSON document.
+  decodeThreadListing(parseJsonObject(text, "thread listing"))
+
+proc parseFollowedChannel*(text: string): FollowedChannel =
+  ## Decodes an announcement-follow result from a JSON document.
+  decodeFollowedChannel(parseJsonObject(text, "followed channel"))
+
 proc rawJson*(channel: Channel): JsonNode =
   ## Returns an independent deep copy of the channel's original JSON.
   rawJson(channel.snapshot)
@@ -342,3 +410,27 @@ proc rawJson*(channel: Channel): JsonNode =
 proc unknownFields*(channel: Channel): seq[UnknownField] =
   ## Returns deep copies of channel fields not consumed by the decoder.
   unknownFields(channel.snapshot)
+
+proc rawJson*(member: ThreadMember): JsonNode =
+  ## Returns an independent deep copy of the membership's original JSON.
+  rawJson(member.snapshot)
+
+proc unknownFields*(member: ThreadMember): seq[UnknownField] =
+  ## Returns unconsumed membership fields.
+  unknownFields(member.snapshot)
+
+proc rawJson*(listing: ThreadListing): JsonNode =
+  ## Returns an independent deep copy of the listing's original JSON.
+  rawJson(listing.snapshot)
+
+proc unknownFields*(listing: ThreadListing): seq[UnknownField] =
+  ## Returns unconsumed top-level listing fields.
+  unknownFields(listing.snapshot)
+
+proc rawJson*(followed: FollowedChannel): JsonNode =
+  ## Returns an independent deep copy of the follow result's original JSON.
+  rawJson(followed.snapshot)
+
+proc unknownFields*(followed: FollowedChannel): seq[UnknownField] =
+  ## Returns unconsumed top-level follow-result fields.
+  unknownFields(followed.snapshot)
