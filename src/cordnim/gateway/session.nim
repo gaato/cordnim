@@ -56,9 +56,13 @@ proc recordReady*(
     state: var GatewaySessionState;
     sessionId, resumeGatewayUrl: sink string,
 ) =
-  ## Records READY identifiers and marks the session as potentially resumable.
+  ## Adopts a genuinely new READY session, replacing any prior epoch.
   ##
-  ## A sequence must still be observed before `canResume` returns true.
+  ## READY opens a fresh Discord session, so the previous session's dispatch
+  ## cursor is discarded: `sequence` is reset to `none` and must be observed
+  ## again before `canResume` returns true. Clearing it here is what stops a
+  ## stale sequence from an earlier session from leaking into a RESUME for the
+  ## new one. Runners call this only after READY dispatch admission.
   if sessionId.len == 0:
     raise newException(ValueError, "gateway session ID must not be empty")
   if resumeGatewayUrl.len == 0:
@@ -66,6 +70,7 @@ proc recordReady*(
 
   state.sessionId = sessionId
   state.resumeGatewayUrl = resumeGatewayUrl
+  state.sequence = none(GatewaySequence)
   state.resumable = true
 
 proc observeSequence*(

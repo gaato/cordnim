@@ -5,12 +5,15 @@
 ## the type declaration stable on Nim 2.2 while still generating a schema and
 ## a decoder for the concrete object type.
 
-import std/[json, macros, options, strutils, tables, unicode]
+import std/[json, macros, options, sequtils, sets, strutils, tables, unicode]
 
 import cordnim/core/ids
+import ./model
 
 const
-  MaxModalComponents* = 40 ## Maximum component count in a current modal.
+  MaxModalRootItems* = 5 ## Maximum root-item count in a modal callback.
+  MaxModalComponents* = MaxModalRootItems ## Compatibility name for the modal
+    ## root limit. The Components V2 limit of 40 applies to messages, not modals.
   MaxModalCustomIdLength* = 100 ## Maximum modal or field custom ID length.
 
 type
@@ -52,6 +55,7 @@ type
     selected*: bool ## Whether Discord initially selects the option.
 
   ModalFieldSpec* = object ## Complete wire metadata for one typed modal field.
+    componentId*: Option[ComponentId] ## Optional ID of the interactive child.
     name*: string ## Nim source field name.
     customId*: string ## Stable Discord component custom ID.
     label*: string ## User-facing label wrapper text.
@@ -63,14 +67,34 @@ type
     minLength*: int ## Minimum text-input character count.
     maxLength*: int ## Maximum text-input character count.
     placeholder*: string ## Optional input placeholder.
+    value*: Option[string] ## Optional prefilled text-input value.
     textStyle*: ModalTextStyle ## Text style; ignored by other kinds.
     options*: seq[ModalChoiceSpec] ## Application-defined choices.
+    defaultValues*: seq[SelectDefaultValue] ## Typed defaults for an
+                                            ## auto-populated select.
     channelTypes*: set[ModalChannelType] ## Allowed channel kinds.
+
+  ModalItemKind* {.pure.} = enum ## Legal current modal root-item kinds.
+    TextDisplay ## Non-interactive Markdown content (wire type 10).
+    Label ## A Label wrapper around exactly one typed input (wire type 18).
+
+  ModalItem* = object ## One ordered item at the root of a modal.
+    id*: Option[ComponentId] ## Optional ID of the Text Display or Label.
+    case kind*: ModalItemKind ## Determines the root wire shape.
+    of ModalItemKind.TextDisplay:
+      content*: string ## Markdown text shown between form controls.
+    of ModalItemKind.Label:
+      field*: ModalFieldSpec ## Label metadata and its interactive child.
 
   ModalSpec* = object ## A modal schema independent of interaction transport.
     customId*: string ## Stable routed identifier for the modal.
     title*: string ## User-facing modal title.
-    fields*: seq[ModalFieldSpec] ## Ordered typed input fields.
+    items*: seq[ModalItem] ## Ordered Text Displays and Label-wrapped fields.
+
+  ModalUnknownField* = object ## A submitted component not declared by a
+                              ## derived form.
+    customId*: string ## Unknown application-owned component identifier.
+    raw*: JsonNode ## Lossless submitted component object.
 
   MentionableKind* {.pure.} = enum ## A mentionable-select entity category.
     User ## A selected Discord user.
@@ -143,12 +167,86 @@ type
   ModalDecodeResult*[T] = object ## A typed value and all decoding problems.
     value*: T ## Partially decoded value on failure.
     problems*: seq[ModalDecodeProblem] ## Empty when decoding succeeded.
+    unknownFields*: seq[ModalUnknownField] ## Undeclared submit fields retained
+                                           ## in their original wire order.
 
   ModalSubmission = object
     customId: string
     responses: Table[string, JsonNode]
+    responseOrder: seq[string]
     resolved: JsonNode
     problems: seq[ModalDecodeProblem]
+
+func modalTextDisplay*(content: string;
+                       id = none(ComponentId)): ModalItem =
+  ## Creates a modal Text Display root item.
+  ##
+  ## Text Displays may appear before, between, or after derived labels. An
+  ## explicit zero ID is serialized; Discord treats it like an omitted ID and
+  ## replaces it when the modal is sent.
+  ModalItem(kind: ModalItemKind.TextDisplay, id: id, content: content)
+
+func modalLabel*(field: ModalFieldSpec;
+                 id = none(ComponentId)): ModalItem =
+  ## Wraps one interactive field in a modal Label root item.
+  ModalItem(kind: ModalItemKind.Label, id: id, field: field)
+
+func initModalSpec*(customId, title: string;
+                    items: openArray[ModalItem]): ModalSpec =
+  ## Creates an ordered modal schema without performing validation.
+  ModalSpec(customId: customId, title: title, items: @items)
+
+func fields*(modal: ModalSpec): seq[ModalFieldSpec] =
+  ## Returns Label children in wire order, excluding Text Displays.
+  ##
+  ## This compatibility view is freshly allocated. Mutate `modal.items`
+  ## directly when changing a schema.
+  for item in modal.items:
+    if item.kind == ModalItemKind.Label:
+      result.add item.field
+
+func withItems*(modal: ModalSpec;
+                items: openArray[ModalItem]): ModalSpec =
+  ## Returns `modal` with its complete ordered root-item sequence replaced.
+  result = modal
+  result.items = @items
+
+proc addTextDisplay*(modal: var ModalSpec; content: string;
+                     id = none(ComponentId)) =
+  ## Appends a Text Display after all current modal items.
+  modal.items.add modalTextDisplay(content, id)
+
+proc insertTextDisplay*(modal: var ModalSpec; index: int; content: string;
+                        id = none(ComponentId)) =
+  ## Inserts a Text Display at a root-item index, preserving label order.
+  ##
+  ## Raises `IndexDefect` when `index` is outside `0..modal.items.len`.
+  modal.items.insert(modalTextDisplay(content, id), index)
+
+func withComponentId*(field: ModalFieldSpec;
+                      id: ComponentId): ModalFieldSpec =
+  ## Returns a field whose interactive child carries `id`.
+  result = field
+  result.componentId = some(id)
+
+func withId*(item: ModalItem; id: ComponentId): ModalItem =
+  ## Returns a Text Display or Label root item carrying `id`.
+  result = item
+  result.id = some(id)
+
+func withPrefilledValue*(field: ModalFieldSpec;
+                         value: string): ModalFieldSpec =
+  ## Returns a text-input field prefilled with `value`.
+  result = field
+  result.value = some(value)
+
+func withDefaultValues*(field: ModalFieldSpec;
+                        values: openArray[SelectDefaultValue]):
+                        ModalFieldSpec =
+  ## Returns an auto-populated select with typed user, role, or channel
+  ## defaults. `validate` checks that every kind matches the field.
+  result = field
+  result.defaultValues = @values
 
 template discordModal*(
     title: static[string];
@@ -169,9 +267,13 @@ template textInput*(
     required: static[bool] = true;
     minLength: static[int] = 0;
     maxLength: static[int] = 4000;
-    customId: static[string] = ""
+    customId: static[string] = "";
+    value: static[string] = ""
   ) {.pragma.}
   ## Declares a `string` or `Option[string]` text-input field.
+  ##
+  ## A nonempty `value` prefills the control. Use `withPrefilledValue` on the
+  ## derived field when an explicitly present empty string matters.
 
 template stringSelect*(
     label: static[string];
@@ -348,18 +450,40 @@ func validate*(modal: ModalSpec): seq[string] =
       $MaxModalCustomIdLength & " characters"
   if modal.title.runeLen notin 1..45:
     result.add "modal title must contain between 1 and 45 characters"
-  if modal.fields.len notin 1..MaxModalComponents:
-    result.add "modal must contain between 1 and " & $MaxModalComponents &
-      " fields"
+  if modal.items.len notin 1..MaxModalRootItems:
+    result.add "modal must contain between 1 and " & $MaxModalRootItems &
+      " root items"
 
-  var customIds: seq[string]
-  for field in modal.fields:
+  var customIds: HashSet[string]
+  var componentIds: HashSet[uint32]
+  template checkComponentId(candidate: Option[ComponentId]; path: string) =
+    if candidate.isSome:
+      let wireId = candidate.get().toUint32()
+      # Discord treats zero as unset and allocates a fresh ID for it.
+      if wireId != 0:
+        if wireId in componentIds:
+          result.add path & ": duplicate nonzero component id " & $wireId
+        else:
+          componentIds.incl wireId
+
+  for itemIndex, item in modal.items:
+    let itemPath = "item " & $itemIndex
+    checkComponentId(item.id, itemPath)
+    if item.kind == ModalItemKind.TextDisplay:
+      if item.content.runeLen notin 1..4_000:
+        result.add itemPath &
+          ": text display must contain between 1 and 4000 characters"
+      continue
+
+    let field = item.field
+    checkComponentId(field.componentId, itemPath & ".component")
     if field.customId.runeLen notin 1..MaxModalCustomIdLength:
       result.add field.name & ": custom_id must contain between 1 and " &
         $MaxModalCustomIdLength & " characters"
     if field.customId in customIds:
       result.add field.name & ": duplicate custom_id '" & field.customId & "'"
-    customIds.add field.customId
+    else:
+      customIds.incl field.customId
     if field.label.runeLen notin 1..45:
       result.add field.name & ": label must contain between 1 and 45 characters"
     if field.description.len > 0 and field.description.runeLen > 100:
@@ -373,6 +497,8 @@ func validate*(modal: ModalSpec): seq[string] =
       if field.minLength notin 0..4000 or field.maxLength notin 1..4000 or
           field.maxLength < field.minLength:
         result.add field.name & ": invalid text length range"
+      if field.value.isSome and field.value.get().runeLen > 4_000:
+        result.add field.name & ": prefilled value exceeds 4000 characters"
     of ModalFieldKind.StringSelect, ModalFieldKind.UserSelect,
         ModalFieldKind.RoleSelect, ModalFieldKind.MentionableSelect,
         ModalFieldKind.ChannelSelect:
@@ -392,6 +518,8 @@ func validate*(modal: ModalSpec): seq[string] =
     of ModalFieldKind.RadioGroup:
       if field.options.len notin 2..10:
         result.add field.name & ": radio group requires 2-10 options"
+      if field.options.countIt(it.selected) > 1:
+        result.add field.name & ": radio group accepts at most one default"
     of ModalFieldKind.CheckboxGroup:
       if field.options.len notin 1..10:
         result.add field.name & ": checkbox group requires 1-10 options"
@@ -400,18 +528,64 @@ func validate*(modal: ModalSpec): seq[string] =
           field.maxValues > field.options.len:
         result.add field.name & ": invalid checkbox cardinality"
     of ModalFieldKind.Checkbox:
-      discard
+      if field.options.len > 1:
+        result.add field.name & ": checkbox accepts one default state"
+
+    if field.kind != ModalFieldKind.TextInput and field.value.isSome:
+      result.add field.name & ": value is legal only on a text input"
+
+    let selectedCount = field.options.countIt(it.selected)
+    if selectedCount > 0 and field.kind in {
+        ModalFieldKind.StringSelect, ModalFieldKind.CheckboxGroup} and
+        selectedCount notin field.minValues..field.maxValues:
+      result.add field.name &
+        ": selected option count must satisfy minValues and maxValues"
+
+    if field.defaultValues.len > 0:
+      if field.kind notin {
+          ModalFieldKind.UserSelect, ModalFieldKind.RoleSelect,
+          ModalFieldKind.MentionableSelect, ModalFieldKind.ChannelSelect}:
+        result.add field.name &
+          ": defaultValues is legal only on an auto-populated select"
+      elif field.defaultValues.len notin field.minValues..field.maxValues:
+        result.add field.name &
+          ": default value count must satisfy minValues and maxValues"
+      var seenDefaults: HashSet[string]
+      for value in field.defaultValues:
+        let compatible = case field.kind
+          of ModalFieldKind.UserSelect: value.kind == sdkUser
+          of ModalFieldKind.RoleSelect: value.kind == sdkRole
+          of ModalFieldKind.ChannelSelect: value.kind == sdkChannel
+          of ModalFieldKind.MentionableSelect:
+            value.kind in {sdkUser, sdkRole}
+          else: false
+        if not compatible:
+          result.add field.name &
+            ": default value kind does not match the select kind"
+        let key = case value.kind
+          of sdkUser: "user:" & $value.userId
+          of sdkRole: "role:" & $value.roleId
+          of sdkChannel: "channel:" & $value.channelId
+        if key in seenDefaults:
+          result.add field.name & ": default values must be unique"
+        else:
+          seenDefaults.incl key
 
     if field.required and field.kind notin {
         ModalFieldKind.TextInput, ModalFieldKind.RadioGroup} and
         field.kind != ModalFieldKind.Checkbox and field.minValues == 0:
       result.add field.name & ": required field must select at least one value"
+    var choiceValues: HashSet[string]
     for choice in field.options:
       if choice.label.runeLen notin 1..100 or
           choice.value.runeLen notin 1..100 or
           choice.description.runeLen > 100:
         result.add field.name &
           ": option text must contain at most 100 characters"
+      if choice.value in choiceValues:
+        result.add field.name & ": option values must be unique"
+      else:
+        choiceValues.incl choice.value
 
 func componentType(kind: ModalFieldKind): int =
   case kind
@@ -426,6 +600,19 @@ func componentType(kind: ModalFieldKind): int =
   of ModalFieldKind.CheckboxGroup: 22
   of ModalFieldKind.Checkbox: 23
 
+func modalDefaultValueJson(value: SelectDefaultValue): JsonNode =
+  case value.kind
+  of sdkUser:
+    %*{"id": $value.userId, "type": "user"}
+  of sdkRole:
+    %*{"id": $value.roleId, "type": "role"}
+  of sdkChannel:
+    %*{"id": $value.channelId, "type": "channel"}
+
+proc putComponentId(node: JsonNode; id: Option[ComponentId]) =
+  if id.isSome:
+    node["id"] = %int64(id.get().toUint32())
+
 func toJson*(modal: ModalSpec): JsonNode =
   ## Serializes a schema as Discord modal callback data.
   ##
@@ -436,9 +623,17 @@ func toJson*(modal: ModalSpec): JsonNode =
   result["title"] = %modal.title
   result["components"] = newJArray()
 
-  for field in modal.fields:
+  for item in modal.items:
+    if item.kind == ModalItemKind.TextDisplay:
+      var display = %*{"type": 10, "content": item.content}
+      display.putComponentId(item.id)
+      result["components"].add display
+      continue
+
+    let field = item.field
     var input = newJObject()
     input["type"] = %field.kind.componentType()
+    input.putComponentId(field.componentId)
     input["custom_id"] = %field.customId
     case field.kind
     of ModalFieldKind.TextInput:
@@ -448,6 +643,8 @@ func toJson*(modal: ModalSpec): JsonNode =
       input["max_length"] = %field.maxLength
       if field.placeholder.len > 0:
         input["placeholder"] = %field.placeholder
+      if field.value.isSome:
+        input["value"] = %field.value.get()
     of ModalFieldKind.StringSelect, ModalFieldKind.RadioGroup,
         ModalFieldKind.CheckboxGroup:
       input["options"] = newJArray()
@@ -477,6 +674,10 @@ func toJson*(modal: ModalSpec): JsonNode =
         input["channel_types"] = newJArray()
         for channelType in field.channelTypes:
           input["channel_types"].add(%ord(channelType))
+      if field.defaultValues.len > 0:
+        input["default_values"] = newJArray()
+        for value in field.defaultValues:
+          input["default_values"].add value.modalDefaultValueJson()
     of ModalFieldKind.FileUpload:
       input["required"] = %field.required
       input["min_values"] = %field.minValues
@@ -490,6 +691,7 @@ func toJson*(modal: ModalSpec): JsonNode =
       "label": field.label,
       "component": input
     }
+    label.putComponentId(item.id)
     if field.description.len > 0:
       label["description"] = %field.description
     result["components"].add label
@@ -515,6 +717,7 @@ proc collectResponses(node: JsonNode; submission: var ModalSubmission) =
       )
     else:
       submission.responses[customId] = node
+      submission.responseOrder.add customId
   if node.hasKey("component"):
     collectResponses(node["component"], submission)
   if node.hasKey("components") and node["components"].kind == JArray:
@@ -555,6 +758,19 @@ func submissionProblems(submission: ModalSubmission):
 
 func submissionCustomId(submission: ModalSubmission): string =
   submission.customId
+
+func unknownFields(submission: ModalSubmission;
+                   knownCustomIds: openArray[string]):
+                   seq[ModalUnknownField] =
+  var known: HashSet[string]
+  for customId in knownCustomIds:
+    known.incl customId
+  for customId in submission.responseOrder:
+    if customId notin known:
+      result.add ModalUnknownField(
+        customId: customId,
+        raw: submission.responses[customId].copy()
+      )
 
 func response(submission: ModalSubmission; field: ModalFieldSpec;
               problems: var seq[ModalDecodeProblem]): JsonNode =
@@ -981,6 +1197,8 @@ proc parseField(definition, declaredName, typeNode: NimNode): DerivedField
     result.spec.maxLength = metadata[7].intVal.int
     if metadata[8].strVal.len > 0:
       result.spec.customId = metadata[8].strVal
+    if metadata[9].strVal.len > 0:
+      result.spec.value = some(metadata[9].strVal)
   of ModalFieldKind.StringSelect, ModalFieldKind.UserSelect,
       ModalFieldKind.RoleSelect, ModalFieldKind.MentionableSelect,
       ModalFieldKind.ChannelSelect:
@@ -1068,11 +1286,11 @@ proc deriveModal(typeNode: NimNode): DerivedModal {.compileTime.} =
   let schema = ModalSpec(
     customId: result.customId,
     title: result.title,
-    fields: block:
-      var fields: seq[ModalFieldSpec]
+    items: block:
+      var items: seq[ModalItem]
       for field in result.fields:
-        fields.add field.spec
-      fields
+        items.add modalLabel(field.spec)
+      items
   )
   let problems = schema.validate()
   if problems.len > 0:
@@ -1115,15 +1333,22 @@ proc fieldSpecExpr(field: ModalFieldSpec): NimNode {.compileTime.} =
       newCall(bindSym"ModalTextStyle", newLit(ord(field.textStyle)))),
     newTree(nnkExprColonExpr, ident"options", choices),
     newTree(nnkExprColonExpr, ident"channelTypes", channels))
+  if field.value.isSome:
+    result.add newTree(nnkExprColonExpr, ident"value",
+      newCall(bindSym"some", newLit(field.value.get())))
 
 proc specExpr(modal: DerivedModal): NimNode {.compileTime.} =
-  var fields = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
+  var items = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
   for field in modal.fields:
-    fields[1].add(fieldSpecExpr(field.spec))
+    items[1].add(newTree(nnkObjConstr, bindSym"ModalItem",
+      newTree(nnkExprColonExpr, ident"kind",
+        newDotExpr(bindSym"ModalItemKind", ident"Label")),
+      newTree(nnkExprColonExpr, ident"field",
+        fieldSpecExpr(field.spec))))
   newTree(nnkObjConstr, bindSym"ModalSpec",
     newTree(nnkExprColonExpr, ident"customId", newLit(modal.customId)),
     newTree(nnkExprColonExpr, ident"title", newLit(modal.title)),
-    newTree(nnkExprColonExpr, ident"fields", fields))
+    newTree(nnkExprColonExpr, ident"items", items))
 
 proc rendered(typeNode: NimNode): string {.compileTime.} =
   typeNode.repr.replace(" ", "")
@@ -1477,12 +1702,18 @@ macro deriveDiscordModal*(modalType: typedesc): untyped =
   let submission = genSym(nskLet, "submission")
   let getSubmissionProblems = bindSym"submissionProblems"
   let getSubmissionCustomId = bindSym"submissionCustomId"
+  let getUnknownFields = bindSym"unknownFields"
+  var knownCustomIds = newTree(nnkPrefix, ident"@", newTree(nnkBracket))
+  for derived in modal.fields:
+    knownCustomIds[1].add newLit(derived.spec.customId)
 
   var decodeBody = newStmtList()
   decodeBody.add quote do:
     var `decoded`: ModalDecodeResult[`typeNode`]
     let `submission` = parseSubmission(`payload`)
     `decoded`.problems.add `getSubmissionProblems`(`submission`)
+    `decoded`.unknownFields = `getUnknownFields`(`submission`,
+      `knownCustomIds`)
     let submittedCustomId = `getSubmissionCustomId`(`submission`)
     if submittedCustomId.len > 0 and submittedCustomId != `customId`:
       `decoded`.problems.addProblem(

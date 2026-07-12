@@ -51,3 +51,13 @@ block typedDiscordErrors:
     caughtAsBase = true
     doAssert caught.metadata.status == some(429)
   doAssert caughtAsBase
+
+  doAssert newDiscordError(
+    RequestCancelledError, "cancelled").kind == dekRequestCancelled
+  doAssert newDiscordError(
+    RequestDeadlineError, "expired").kind == dekRequestDeadline
+  doAssert newDiscordError(
+    LifecycleError, "stopped").kind == dekLifecycle
+  doAssert dekRequestCancelled.name == "request_cancelled"
+  doAssert dekRequestDeadline.name == "request_deadline"
+  doAssert dekLifecycle.name == "lifecycle"

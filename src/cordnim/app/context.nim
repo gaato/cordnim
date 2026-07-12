@@ -8,6 +8,7 @@ import std/json
 
 import chronos
 
+import cordnim/components/forms
 import cordnim/interactions/[exchange, responder, response_codec]
 
 export exchange
@@ -40,7 +41,7 @@ proc responseState*(context: Context): InteractionResponseState =
   context.exchangeValue.responseState()
 
 proc selectInitial(context: Context, action: ResponseAction,
-                   responseKind: InitialResponseKind, body: sink JsonNode,
+                   body: sink JsonNode,
                    visibility: Visibility): Future[void] {.async.} =
   if context.isNil:
     raise newException(InteractionExchangeError,
@@ -52,14 +53,14 @@ proc selectInitial(context: Context, action: ResponseAction,
     body: body
   )
   response.validateInitialResponse()
-  exchange.selectInitial(response, responseKind)
+  exchange.selectInitial(response)
 
 proc reply*(context: Context, body: sink JsonNode,
             visibility = vPublic): Future[void] =
   ## Selects the one immediate initial message response.
   ##
   ## Completion means selection succeeded; ingress confirms delivery later.
-  context.selectInitial(raReply, irkMessage, body, visibility)
+  context.selectInitial(raReply, body, visibility)
 
 proc reply*(context: Context, content: string,
             visibility = vPublic): Future[void] =
@@ -71,18 +72,32 @@ proc deferReply*(context: Context, visibility = vPublic,
   ## Selects a deferred response so later edits or follow-ups are legal.
   context.selectInitial(
     if update: raDeferUpdate else: raDefer,
-    if update: irkDeferredUpdate else: irkDeferredMessage,
     newJNull(),
     visibility
   )
 
 proc updateMessage*(context: Context, body: sink JsonNode): Future[void] =
   ## Selects an immediate component-message update.
-  context.selectInitial(raUpdateMessage, irkUpdateMessage, body, vPublic)
+  context.selectInitial(raUpdateMessage, body, vPublic)
 
-proc showModal*(context: Context, body: sink JsonNode): Future[void] =
-  ## Selects a modal as the initial response.
-  context.selectInitial(raModal, irkModal, body, vPublic)
+proc validatedModalBody(spec: ModalSpec): JsonNode =
+  let problems = spec.validate()
+  if problems.len > 0:
+    raise newException(ValueError,
+      "modal schema is invalid: " & problems[0])
+  spec.toJson()
+
+proc showModal*(context: Context, spec: ModalSpec): Future[void] =
+  ## Validates and selects a modal as the initial response.
+  context.selectInitial(raModal, spec.validatedModalBody(), vPublic)
+
+proc showRawModal*(context: Context, body: sink JsonNode): Future[void] =
+  ## Selects caller-built modal JSON through the explicit low-level path.
+  ##
+  ## This checks only the callback container shape. Prefer `showModal` with a
+  ## `ModalSpec` so component and modal constraints are validated before the
+  ## exchange consumes response authority.
+  context.selectInitial(raModal, body, vPublic)
 
 proc sendAfterAck(context: Context, action: ResponseAction,
                   body: sink JsonNode,

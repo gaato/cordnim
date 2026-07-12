@@ -32,6 +32,12 @@ suite "interaction responder":
     check validatePolicy(ikAutocomplete, autoDefer()) == irePolicyUnsupported
     check validatePolicy(ikMessageComponent, autoDeferUpdate()) == ireNone
 
+  test "only component-origin modal submits can update a source message":
+    check irkDeferredUpdate notin ikCommandModalSubmit.allowedInitialKinds
+    check irkUpdateMessage notin ikCommandModalSubmit.allowedInitialKinds
+    check irkDeferredUpdate in ikComponentModalSubmit.allowedInitialKinds
+    check irkUpdateMessage in ikComponentModalSubmit.allowedInitialKinds
+
 suite "HTTP interaction verification":
   proc acceptingVerifier(publicKey, signature, message: openArray[byte]): bool
       {.gcsafe, raises: [].} =

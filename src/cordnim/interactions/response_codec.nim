@@ -18,6 +18,12 @@ func validateInitialResponse*(response: ContextResponse) =
         "interaction message response body must be a JSON object")
   of raDefer, raDeferUpdate:
     discard
+  of raAutocomplete:
+    if response.body.isNil or response.body.kind != JObject or
+        not response.body.hasKey("choices") or
+        response.body["choices"].kind != JArray:
+      raise newException(ResponseCodecError,
+        "interaction autocomplete data must contain a choices array")
   of raModal:
     if response.body.isNil or response.body.kind != JObject:
       raise newException(ResponseCodecError,
@@ -66,6 +72,9 @@ func initialResponseJson*(response: ContextResponse): JsonNode =
   of raUpdateMessage:
     result["type"] = %7
     result["data"] = response.messageData()
+  of raAutocomplete:
+    result["type"] = %8
+    result["data"] = response.body.copy()
   of raModal:
     result["type"] = %9
     result["data"] = response.body.copy()

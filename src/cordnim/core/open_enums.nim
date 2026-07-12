@@ -39,10 +39,30 @@ func knownValue*[E: enum, Raw: SomeInteger](
         return some(known)
   none(E)
 
+func knownValue*[E: enum, Raw](
+    value: OpenEnum[E, Raw]; mapping: openArray[(Raw, E)]
+): Option[E] =
+  ## Returns the enum member mapped to the exact wire value.
+  ##
+  ## This overload supports string-backed and other explicitly mapped Discord
+  ## enums. The mapping remains caller/generated source data; `OpenEnum` stores
+  ## only the raw wire value, so knownness cannot drift inside the value.
+  ## If a mapping repeats a raw value, the first matching entry wins.
+  for entry in mapping:
+    if value.raw == entry[0]:
+      return some(entry[1])
+  none(E)
+
 func isKnown*[E: enum, Raw: SomeInteger](
     value: OpenEnum[E, Raw]): bool =
   ## Tests whether the raw value matches a declared member of `E`.
   value.knownValue.isSome
+
+func isKnown*[E: enum, Raw](
+    value: OpenEnum[E, Raw]; mapping: openArray[(Raw, E)]
+): bool =
+  ## Tests knownness using an explicit wire-value mapping.
+  value.knownValue(mapping).isSome
 
 proc requireKnown*[E: enum, Raw: SomeInteger](
     value: OpenEnum[E, Raw]): E =
@@ -51,6 +71,15 @@ proc requireKnown*[E: enum, Raw: SomeInteger](
   if known.isNone:
     raise newException(ValueError, "unknown Discord enum value: " &
       $value.raw)
+  known.get
+
+proc requireKnown*[E: enum, Raw](
+    value: OpenEnum[E, Raw]; mapping: openArray[(Raw, E)]
+): E =
+  ## Returns the explicitly mapped member or raises `ValueError`.
+  let known = value.knownValue(mapping)
+  if known.isNone:
+    raise newException(ValueError, "unknown mapped Discord enum value")
   known.get
 
 proc toOpenEnum*[Raw: SomeInteger, E: enum](
@@ -65,6 +94,18 @@ proc toOpenEnum*[Raw: SomeInteger, E: enum](
         BiggestInt(ordinal) > BiggestInt(high(Raw)):
       raise newException(ValueError, "enum ordinal does not fit wire type")
   OpenEnum[E, Raw](raw: Raw(ordinal))
+
+proc toOpenEnum*[E: enum, Raw](
+    value: E; mapping: openArray[(Raw, E)]
+): OpenEnum[E, Raw] =
+  ## Encodes a known member using an explicit wire-value mapping.
+  ##
+  ## Raises `ValueError` when the mapping has no wire value for `value`.
+  ## If a mapping repeats an enum member, the first matching entry wins.
+  for entry in mapping:
+    if entry[1] == value:
+      return OpenEnum[E, Raw](raw: entry[0])
+  raise newException(ValueError, "Discord enum member has no wire mapping")
 
 func `==`*[E, Raw](left, right: OpenEnum[E, Raw]): bool {.inline.} =
   ## Compares exact wire values within the same enum domain.

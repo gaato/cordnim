@@ -70,6 +70,8 @@ proc componentJson(node: ComponentNode,
   result = newJObject()
   if node.kind != mckMediaItem:
     result["type"] = %node.kind.wireType()
+    if node.id.isSome:
+      result["id"] = %int64(node.id.get().toUint32())
   case node.kind
   of mckActionRow, mckContainer:
     result["components"] = newJArray()

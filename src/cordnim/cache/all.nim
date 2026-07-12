@@ -1,5 +1,8 @@
-## Public aggregation module for optional immutable snapshot caches.
+## Complete public cache surface for policies, snapshots, stores, and lookup.
+##
+## Stores retain immutable `Snapshot` values. Resolver policy keeps cache-only
+## reads separate from lookups that may call an injected REST fetch callback.
 
-import ./[policy, resolution, snapshots, store]
+import ./[policy, resolution, resolver, snapshots, store]
 
-export policy, resolution, snapshots, store
+export policy, resolution, resolver, snapshots, store

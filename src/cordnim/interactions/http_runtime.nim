@@ -1,20 +1,24 @@
-## Owned webhook-only application runtime.
+## Owned HTTP interaction runtime for webhook-only and hybrid applications.
 ##
 ## This factory wires the high-level app to verified Chronos HTTP ingress and
-## an unauthenticated interaction-webhook REST client. Hybrid applications add
-## an independent Gateway-event owner through a larger composite runtime; this
-## focused factory rejects that shape instead of silently omitting it.
+## an unauthenticated interaction-webhook REST client through one
+## `InteractionDispatcher`. A hybrid application attaches this component and an
+## independent Gateway event runtime to the same `DiscordApp`; the app starts
+## and closes both components as one owner.
+
+import std/options
 
 import chronos
 
 import cordnim/app
+import cordnim/components/routes
 import cordnim/rest
-import ./[http_server, router, verification, webhook_completion]
+import ./[dispatcher, http_server, verification, webhook_completion]
 
-type InteractionHttpRuntime*[S] = ref object ## Resources owned by one
-                                               ## webhook-only app.
+type InteractionHttpRuntime*[S] = ref object ## Resources owned by one HTTP
+                                               ## interaction component.
     appValue: DiscordApp[S]
-    routerValue: CommandRouter[S]
+    dispatcherValue: InteractionDispatcher[S]
     serverValue: InteractionHttpServer
     webhookTransport: DiscordHttpTransport
     webhookClient: ChronosRestClient
@@ -26,34 +30,48 @@ proc newInteractionHttpRuntime*[S](
     endpointPath = "/interactions";
     discordApiBaseUrl = DiscordApiBaseUrl;
     maxResponseBodyBytes = 16 * 1_024 * 1_024;
+    routeEnvelope = none(RouteCodec);
+    handlerFailureObserver: RetainedFailureObserver = nil;
+    commandFailureObserver: DeferredFailureObserver = nil;
+    routeClock: InteractionWallClock = systemInteractionUnixSeconds;
 ): InteractionHttpRuntime[S] =
-  ## Binds and attaches the complete webhook-only transport lifecycle.
+  ## Binds and attaches the complete HTTP interaction transport lifecycle.
+  ##
+  ## Supplying `routeEnvelope` enables persistent component and modal routing;
+  ## register component, modal, and autocomplete handlers on `runtime.dispatcher`
+  ## before starting the app. The same REST client carries auto-defer
+  ## completions, original-response edits, and follow-ups for every interaction
+  ## class.
   if app.isNil:
     raise newException(ValueError, "HTTP runtime requires an application")
-  if app.config.appMode != webhookOnly:
+  if app.config.interactionIngress != ingressHttp:
     raise newException(ValueError,
-      "webhook-only runtime requires HTTP ingress without Gateway events")
-  if app.hasLifecycle or app.lifecycleState != alsReady:
+      "HTTP interaction runtime requires HTTP interaction ingress")
+  if app.lifecycleState != alsReady:
     raise newException(AppLifecycleError,
-      "application transport lifecycle is already configured or started")
+      "application runtime components can only be attached while ready")
 
   let httpTransport = newWebhookHttpTransport(
     discordApiBaseUrl, maxResponseBodyBytes)
   let restClient = newChronosRestClient(httpTransport.asRestTransport())
 
-  let commandRouter = newCommandRouter(
+  let interactionDispatcher = newInteractionDispatcher(
     app,
     completionSink = interactionWebhookCompletion(restClient),
-    postAckSink = interactionWebhookPostAckSink(restClient))
+    commandFailureObserver = commandFailureObserver,
+    postAckSink = interactionWebhookPostAckSink(restClient),
+    handlerFailureObserver = handlerFailureObserver,
+    routeEnvelope = routeEnvelope,
+    routeClock = routeClock)
   let interactionServer = newInteractionHttpServer(
     bindAddress,
     verification,
-    commandRouter.asHttpHandler(),
+    interactionDispatcher.asHttpHandler(),
     endpointPath)
 
   result = InteractionHttpRuntime[S](
     appValue: app,
-    routerValue: commandRouter,
+    dispatcherValue: interactionDispatcher,
     serverValue: interactionServer,
     webhookTransport: httpTransport,
     webhookClient: restClient)
@@ -78,7 +96,7 @@ proc newInteractionHttpRuntime*[S](
       closure, gcsafe, raises: [].} =
     proc closeOwned(): Future[void] {.async.} =
       await runtime.serverValue.close()
-      await runtime.routerValue.close()
+      await runtime.dispatcherValue.close()
       await runtime.webhookClient.stop()
       await runtime.webhookTransport.close()
     {.cast(gcsafe).}:
@@ -86,6 +104,14 @@ proc newInteractionHttpRuntime*[S](
 
   app.configureLifecycle(initAppLifecycle(
     startRuntime, waitRuntime, closeRuntime))
+
+func dispatcher*[S](runtime: InteractionHttpRuntime[S]):
+    InteractionDispatcher[S] =
+  ## Returns the owned dispatcher so component, modal, and autocomplete handlers
+  ## can be registered before the application starts.
+  if runtime.isNil or runtime.dispatcherValue.isNil:
+    raise newException(ValueError, "HTTP runtime is not initialized")
+  runtime.dispatcherValue
 
 func localAddress*[S](runtime: InteractionHttpRuntime[S]): TransportAddress =
   ## Returns the bound interaction-listener address.

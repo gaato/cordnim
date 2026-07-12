@@ -4,13 +4,24 @@
 ## versioned payload into its Nim action type, and invokes an ordinary Chronos
 ## handler. No process-local collector is needed, so registered buttons survive
 ## restarts as long as signing keys and migration decoders remain available.
+##
+## A component activation is an interaction, so it flows through the same
+## response model as an application command: one `InteractionExchange` owns the
+## single initial response, and a narrow `Context` exposes `reply`, `defer`,
+## `update message`, `show modal`, `edit original`, and `follow-up`. A handler
+## may still return a `ComponentResponse`; that value is selected only
+## when the handler did not already choose one through the context.
 
-import std/[json, tables]
+import std/[json, options, tables]
 
 import chronos
 
-import cordnim/components/[routes, typed_routes]
-import ./[context, router]
+import cordnim/app/context as appcontext
+import cordnim/components/[forms, routes, typed_routes]
+import cordnim/rest/chronos_driver
+import cordnim/rest/request
+import cordnim/runtime/task_scope
+import ./[context, dispatch_core, exchange, responder, response_codec, router]
 
 type
   ComponentRouteDispatchError* = object of CatchableError ## Malformed,
@@ -20,11 +31,12 @@ type
     ## component handler.
     crkMessage, ## Send a new interaction message (callback type 4).
     crkUpdateMessage, ## Update the component's source message (type 7).
-    crkModal ## Present a modal (callback type 9).
+    crkModal, ## Present a modal (callback type 9).
+    crkContext ## The handler already selected its response through the context.
 
   ComponentResponse* = object ## Transport-neutral immediate component response.
     kind*: ComponentResponseKind ## Discord callback semantic.
-    data*: JsonNode ## Message or modal callback data.
+    data*: JsonNode ## Message or modal callback data; nil for `crkContext`.
 
   ComponentInvocation* = object ## Verified message-component interaction
     ## supplied to handlers.
@@ -34,24 +46,30 @@ type
     resolved*: JsonNode ## Lossless resolved entity maps.
     raw*: JsonNode ## Complete interaction for raw escape hatches.
 
-  ComponentCtx*[S] = object ## Typed application services plus verified
-    ## component invocation metadata.
-    services*: S ## Application-owned dependency container.
-    invocation*: ComponentInvocation ## Current component activation.
+  ComponentCtx*[S] = object ## Typed application services, a response context,
+    ## and verified component invocation metadata.
+    serviceValue: ref S
+    responseContextValue: appcontext.Context
+    invocationValue: ComponentInvocation
 
   ComponentHandler*[S, T] = proc(context: ComponentCtx[S], action: T):
     Future[ComponentResponse] {.closure, gcsafe, raises: [].} ## Handler for one
     ## decoded typed action.
 
-  ErasedComponentHandler[S] = proc(services: S,
+  ErasedComponentHandler[S] = proc(services: ref S,
+    exchange: InteractionExchange, responseContext: appcontext.Context,
     invocation: ComponentInvocation, envelope: RouteEnvelope):
-    Future[ComponentResponse] {.closure, gcsafe, raises: [].}
+    Future[void] {.closure, gcsafe,
+      raises: [CancelledError, ComponentRouteDispatchError].}
 
   ComponentRouter*[S] = ref object ## Typed persistent route registry using one
-    ## shared HMAC key ring.
-    services*: S ## Application-owned dependency container.
-    envelope*: RouteCodec ## Shared HMAC verification and rotation config.
+    ## shared HMAC key ring and one structured task scope.
+    services: ref S ## App-owned dependency container, held by reference.
+    envelopeValue: RouteCodec ## Shared HMAC verification and rotation config.
     handlers: Table[uint16, ErasedComponentHandler[S]]
+    tasks: TaskScope ## Owns retained post-acknowledgement handler tails.
+    postAckSink: PostAckResponseSink ## Original-message edit and follow-up I/O.
+    failureObserver: RetainedFailureObserver ## Redacted background-failure sink.
 
 proc replyComponent*(data: sink JsonNode): ComponentResponse =
   ## Creates a new-message response to a component activation.
@@ -65,50 +83,109 @@ proc updateComponent*(data: sink JsonNode): ComponentResponse =
     raise newException(ValueError, "component response data must be an object")
   ComponentResponse(kind: crkUpdateMessage, data: data)
 
-proc showComponentModal*(data: sink JsonNode): ComponentResponse =
-  ## Creates a modal response from `ModalSpec.toJson()` data.
+proc showRawComponentModal*(data: sink JsonNode): ComponentResponse =
+  ## Creates a modal response through the explicit caller-built JSON path.
   if data.isNil or data.kind != JObject:
     raise newException(ValueError, "modal response data must be an object")
   ComponentResponse(kind: crkModal, data: data)
 
-proc callbackJson*(response: ComponentResponse): JsonNode =
-  ## Serializes a component response as a Discord interaction callback.
-  result = newJObject()
-  result["type"] = %(case response.kind
-    of crkMessage: 4
-    of crkUpdateMessage: 7
-    of crkModal: 9)
-  result["data"] = if response.data.isNil:
-    newJObject()
-  else:
-    response.data.copy()
-  # Component callbacks inherit the library-wide safe mention default unless
-  # the handler explicitly supplies a narrower Discord policy.
-  if response.kind != crkModal and
-      not result["data"].hasKey("allowed_mentions"):
-    result["data"]["allowed_mentions"] = %*{"parse": []}
-
-proc newComponentRouter*[S](services: sink S,
-                            envelope: sink RouteCodec): ComponentRouter[S] =
-  ## Creates an empty persistent router around one signing-key ring.
-  if envelope.signer.isNil:
+proc showComponentModal*(spec: ModalSpec): ComponentResponse =
+  ## Validates and creates a modal response from a `ModalSpec`.
+  let problems = spec.validate()
+  if problems.len > 0:
     raise newException(ValueError,
-      "component router requires an HMAC signer")
+      "modal schema is invalid: " & problems[0])
+  showRawComponentModal(spec.toJson())
+
+func respondedViaContext*(): ComponentResponse =
+  ## Signals that the handler already selected its response through the context.
+  ##
+  ## Return this after using `reply`, `deferReply`, `updateMessage`,
+  ## `showModal`, `editOriginal`, or `followup`; the router then treats the
+  ## context selection as authoritative and ignores this value.
+  ComponentResponse(kind: crkContext, data: nil)
+
+func componentVisibility(data: JsonNode): Visibility =
+  # Discord carries component-message visibility in the message flags, so the
+  # response stays public here and the caller's `flags` bit is preserved.
+  if not data.isNil and data.kind == JObject and data.hasKey("flags") and
+      data["flags"].kind == JInt and (data["flags"].getInt() and 64) != 0:
+    vEphemeral
+  else:
+    vPublic
+
+func toContextResponse(response: ComponentResponse): ContextResponse =
+  ## Maps a returned component response to a transport-neutral context action.
+  case response.kind
+  of crkMessage:
+    ContextResponse(action: raReply, visibility: response.data.componentVisibility(),
+      body: response.data)
+  of crkUpdateMessage:
+    ContextResponse(action: raUpdateMessage, visibility: vPublic,
+      body: response.data)
+  of crkModal:
+    ContextResponse(action: raModal, visibility: vPublic, body: response.data)
+  of crkContext:
+    ContextResponse(action: raReply, visibility: vPublic, body: nil)
+
+proc selectComponentResponse*(exchange: InteractionExchange,
+                              response: ComponentResponse) =
+  ## Selects a returned component or modal response on the exchange.
+  ##
+  ## Does nothing when the handler already selected a response through the
+  ## context. Raises `InteractionExchangeError` if the handler neither returned
+  ## a response nor selected one, or if the response is illegal for the
+  ## interaction type. The modal router reuses this so both share one selection
+  ## rule and one interaction-type policy check.
+  if exchange.initialResponseReady:
+    return
+  if response.kind == crkContext:
+    raise newException(InteractionExchangeError,
+      "handler returned no response and selected none through the context")
+  let contextResponse = response.toContextResponse()
+  contextResponse.validateInitialResponse()
+  exchange.selectInitial(contextResponse)
+
+func envelope*[S](router: ComponentRouter[S]): RouteCodec =
+  ## Returns the shared signing envelope so a modal router can reuse the ring.
+  router.envelopeValue
+
+proc newComponentRouter*[S](services: ref S, envelope: sink RouteCodec,
+                            postAckSink: PostAckResponseSink = nil,
+                            failureObserver: RetainedFailureObserver = nil):
+                            ComponentRouter[S] =
+  ## Creates an empty persistent router around one signing-key ring.
+  ##
+  ## `services` is the application-owned allocation, held by reference so
+  ## handlers observe exactly the services the application owns. `postAckSink`
+  ## carries original-message edits and follow-ups; `failureObserver` receives a
+  ## redacted correlation ID if a retained handler tail fails after delivery.
+  if services.isNil:
+    raise newException(ValueError, "component router requires app services")
+  if envelope.signer.isNil:
+    raise newException(ValueError, "component router requires an HMAC signer")
   ComponentRouter[S](
     services: services,
-    envelope: envelope,
-    handlers: initTable[uint16, ErasedComponentHandler[S]]()
+    envelopeValue: envelope,
+    handlers: initTable[uint16, ErasedComponentHandler[S]](),
+    tasks: newTaskScope(),
+    postAckSink: postAckSink,
+    failureObserver: failureObserver
   )
 
 proc register*[S, T](router: ComponentRouter[S], codec: TypedRouteCodec[T],
                      handler: ComponentHandler[S, T]) =
   ## Registers one stable route type and its typed migration decoders.
+  ##
+  ## The typed codec must use the router's key ring, and its route type must be
+  ## unique; both are rejected explicitly so a misconfiguration fails at wiring
+  ## time rather than during dispatch.
   if router.isNil:
     raise newException(ValueError, "component router is nil")
   if handler.isNil:
     raise newException(ValueError, "component route handler is nil")
-  if codec.envelope.activeKeyId != router.envelope.activeKeyId or
-      codec.envelope.keys != router.envelope.keys:
+  if codec.envelope.activeKeyId != router.envelopeValue.activeKeyId or
+      codec.envelope.keys != router.envelopeValue.keys:
     raise newException(ValueError,
       "typed route codec does not use the component router key ring")
   if router.handlers.hasKey(codec.routeTypeId):
@@ -118,29 +195,41 @@ proc register*[S, T](router: ComponentRouter[S], codec: TypedRouteCodec[T],
   let typedCodec = codec
   let typedHandler = handler
   let erased: ErasedComponentHandler[S] = proc(
-      services: S, invocation: ComponentInvocation,
-      envelope: RouteEnvelope): Future[ComponentResponse]
-      {.gcsafe, raises: [].} =
-    proc dispatch(): Future[ComponentResponse] {.
+      services: ref S, exchange: InteractionExchange,
+      responseContext: appcontext.Context, invocation: ComponentInvocation,
+      envelope: RouteEnvelope): Future[void]
+      {.gcsafe, raises: [CancelledError, ComponentRouteDispatchError].} =
+    # This closure is the single explicit component-application boundary. It
+    # decodes, runs the handler, and selects the returned response, translating
+    # every application failure into a redacted dispatch error that never
+    # carries the exception message, body, token, or custom_id contents.
+    proc apply(): Future[void] {.
         async: (raises: [CancelledError, ComponentRouteDispatchError]).} =
       let decoded = typedCodec.decodeVerified(envelope)
       if not decoded.ok:
         raise newException(ComponentRouteDispatchError,
           "component route payload could not be decoded")
+      let ctx = ComponentCtx[S](
+        serviceValue: services,
+        responseContextValue: responseContext,
+        invocationValue: invocation)
+      var response: ComponentResponse
       try:
-        return await typedHandler(
-          ComponentCtx[S](services: services, invocation: invocation),
-          decoded.value
-        )
+        response = await typedHandler(ctx, decoded.value)
       except CancelledError:
         raise
       except CatchableError:
-        # Keep application exception details out of protocol-facing failures;
-        # logging adapters can record them at the handler boundary instead.
         raise newException(ComponentRouteDispatchError,
           "component route handler failed")
+      try:
+        selectComponentResponse(exchange, response)
+      except CancelledError:
+        raise
+      except CatchableError:
+        raise newException(ComponentRouteDispatchError,
+          "component response could not be selected")
     {.cast(gcsafe).}:
-      return dispatch()
+      return apply()
   router.handlers[codec.routeTypeId] = erased
 
 proc decodeInvocation(interaction: JsonNode): ComponentInvocation =
@@ -174,9 +263,25 @@ proc decodeInvocation(interaction: JsonNode): ComponentInvocation =
           "component values must be strings")
       result.values.add(value.getStr())
 
-proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
-               nowUnixSeconds: int64): Future[JsonNode] {.async.} =
-  ## Authenticates, decodes, dispatches, and serializes one component callback.
+proc postAckSender[S](router: ComponentRouter[S],
+                      interaction: JsonNode): ContextResponseSender =
+  result = proc(response: ContextResponse): Future[void] {.
+      closure, gcsafe, raises: [CatchableError].} =
+    if router.postAckSink.isNil:
+      raise newException(InteractionExchangeError,
+        "component post-acknowledgement transport is not configured")
+    {.cast(gcsafe).}:
+      return router.postAckSink(interaction, response)
+
+proc selectResponse*[S](router: ComponentRouter[S], interaction: JsonNode,
+                        nowUnixSeconds: int64, receivedAt: MonoMillis):
+                        Future[SelectedResponse] {.async.} =
+  ## Authenticates, decodes, and dispatches a component activation.
+  ##
+  ## Returns the selected callback body and the exchange that owns delivery
+  ## authority; the calling adapter confirms delivery only after its own write
+  ## succeeds. `nowUnixSeconds` bounds route expiry; `receivedAt` anchors the
+  ## acknowledgement deadline.
   if router.isNil:
     raise newException(ValueError, "component router is nil")
   let invocation = interaction.decodeInvocation()
@@ -184,7 +289,7 @@ proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
   if not data.hasKey("custom_id") or data["custom_id"].kind != JString:
     raise newException(ComponentRouteDispatchError,
       "component custom_id is missing")
-  let decoded = router.envelope.decodeRoute(
+  let decoded = router.envelopeValue.decodeRoute(
     data["custom_id"].getStr(), nowUnixSeconds)
   if not decoded.ok:
     raise newException(ComponentRouteDispatchError,
@@ -192,6 +297,91 @@ proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
   if not router.handlers.hasKey(decoded.envelope.routeTypeId):
     raise newException(ComponentRouteDispatchError,
       "component route type is not registered")
-  let response = await router.handlers[decoded.envelope.routeTypeId](
-    router.services, invocation, decoded.envelope)
-  response.callbackJson()
+
+  let responder = newInteractionResponder(receivedAt)
+  let exchange = newInteractionExchange(
+    ikMessageComponent,
+    invocation.context.responsePolicy,
+    responder,
+    invocation.context.followupBudget,
+    router.postAckSender(interaction))
+  let responseContext = appcontext.newContext(exchange)
+  let apply = router.handlers[decoded.envelope.routeTypeId](
+    router.services, exchange, responseContext, invocation, decoded.envelope)
+  return await pumpApplication(exchange, responder, apply, router.tasks,
+    router.failureObserver, interaction.observedInteractionId())
+
+proc route*[S](router: ComponentRouter[S], interaction: JsonNode,
+               nowUnixSeconds: int64,
+               receivedAt = monotonicMillis()): Future[JsonNode] {.async.} =
+  ## Authenticates, dispatches, and serializes one component callback.
+  ##
+  ## This result-returning convenience confirms delivery locally and returns the
+  ## callback body. Real ingress uses `InteractionDispatcher`, which confirms
+  ## delivery only after the transport write succeeds.
+  let selected = await router.selectResponse(
+    interaction, nowUnixSeconds, receivedAt)
+  selected.delivery.confirmInitialDelivery()
+  return selected.body
+
+proc close*[S](router: ComponentRouter[S]): Future[void] {.
+               async: (raises: []).} =
+  ## Cancels and joins retained post-acknowledgement handler tails.
+  if not router.isNil:
+    await router.tasks.cancelAndJoin()
+
+# --- Typed response context conveniences -------------------------------------
+
+func services*[S](context: ComponentCtx[S]): lent S =
+  ## Borrows the application dependency container.
+  context.serviceValue[]
+
+func invocation*[S](context: ComponentCtx[S]): lent ComponentInvocation =
+  ## Borrows the verified component invocation.
+  context.invocationValue
+
+func responseContext*[S](context: ComponentCtx[S]): appcontext.Context =
+  ## Returns the ingress-owned response-capable interaction context.
+  context.responseContextValue
+
+proc reply*[S](context: ComponentCtx[S], body: sink JsonNode,
+               visibility = vPublic): Future[void] =
+  ## Selects an immediate new-message response to the component.
+  appcontext.reply(context.responseContextValue, body, visibility)
+
+proc reply*[S](context: ComponentCtx[S], content: string,
+               visibility = vPublic): Future[void] =
+  ## Selects a plain-content new-message response to the component.
+  appcontext.reply(context.responseContextValue, content, visibility)
+
+proc deferReply*[S](context: ComponentCtx[S], visibility = vPublic): Future[void] =
+  ## Selects a deferred new message so later edits or follow-ups are legal.
+  appcontext.deferReply(context.responseContextValue, visibility)
+
+proc deferUpdate*[S](context: ComponentCtx[S]): Future[void] =
+  ## Selects a deferred component-message update (callback type 6).
+  appcontext.deferReply(context.responseContextValue, vPublic, update = true)
+
+proc updateMessage*[S](context: ComponentCtx[S], body: sink JsonNode):
+    Future[void] =
+  ## Selects an immediate update of the component's source message.
+  appcontext.updateMessage(context.responseContextValue, body)
+
+proc showModal*[S](context: ComponentCtx[S], spec: ModalSpec): Future[void] =
+  ## Validates and selects a modal as the component's initial response.
+  appcontext.showModal(context.responseContextValue, spec)
+
+proc showRawModal*[S](context: ComponentCtx[S], body: sink JsonNode):
+    Future[void] =
+  ## Selects caller-built modal JSON through the explicit low-level path.
+  appcontext.showRawModal(context.responseContextValue, body)
+
+proc editOriginal*[S](context: ComponentCtx[S], body: sink JsonNode):
+    Future[void] =
+  ## Waits for confirmed initial delivery, then edits the original response.
+  appcontext.editOriginal(context.responseContextValue, body)
+
+proc followup*[S](context: ComponentCtx[S], body: sink JsonNode,
+                  visibility = vPublic): Future[void] =
+  ## Waits for confirmed initial delivery, then sends a follow-up message.
+  appcontext.followup(context.responseContextValue, body, visibility)

@@ -1,4 +1,4 @@
-import std/[strutils, unittest]
+import std/[options, strutils, unittest]
 
 import cordnim/components
 import cordnim/core/ids
@@ -25,6 +25,35 @@ suite "Components V2":
     let validation = draft.validate()
     check not validation.valid
     check validation.problems[0].kind == cpkButtonTargetConflict
+
+  test "premium buttons reject label and emoji fields":
+    let labeled = v2Draft(actionRow(component(
+      mckButton,
+      text = "Buy",
+      buttonStyle = bsPremium,
+      skuId = some(toId(SkuId, 9))
+    )))
+    check not labeled.validate().valid
+    let decorated = v2Draft(actionRow(component(
+      mckButton,
+      buttonStyle = bsPremium,
+      skuId = some(toId(SkuId, 9)),
+      emoji = some(componentEmoji("💎"))
+    )))
+    check not decorated.validate().valid
+
+  test "custom IDs use character limits and modal-only fields stay out":
+    let unicodeId = repeat("界", MaxCustomIdLength)
+    check v2Draft(actionRow(button("Run", unicodeId))).validate().valid
+    check not v2Draft(actionRow(button(
+      "Run", unicodeId & "界"))).validate().valid
+    let modalOnly = v2Draft(actionRow(component(
+      mckStringSelect,
+      customId = "choice",
+      required = some(true),
+      options = @[selectOption("One", "one")]
+    )))
+    check not modalOnly.validate().valid
 
   test "legacy handles only upgrade in one direction":
     let legacy = messageHandle[Legacy](

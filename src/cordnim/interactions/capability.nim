@@ -86,6 +86,21 @@ proc beginDefer*(interaction: sink Interaction[Fresh], now: MonoMillis,
   beginTransition[Deferred](interaction,
     if update: irkDeferredUpdate else: irkDeferredMessage, now)
 
+proc beginDeferredUpdate*(interaction: sink Interaction[Fresh],
+                          now: MonoMillis): BeginInitialResult[Deferred] =
+  ## Claims an update-style deferred response without a boolean mode flag.
+  beginTransition[Deferred](interaction, irkDeferredUpdate, now)
+
+proc beginUpdate*(interaction: sink Interaction[Fresh],
+                  now: MonoMillis): BeginInitialResult[Responded] =
+  ## Claims an immediate source-message update response.
+  beginTransition[Responded](interaction, irkUpdateMessage, now)
+
+proc beginAutocomplete*(interaction: sink Interaction[Fresh],
+                        now: MonoMillis): BeginInitialResult[Responded] =
+  ## Claims an autocomplete choices response.
+  beginTransition[Responded](interaction, irkAutocomplete, now)
+
 proc beginModal*(interaction: sink Interaction[Fresh],
                  now: MonoMillis): BeginInitialResult[Responded] =
   ## Claims a modal response for an interaction type that permits one.

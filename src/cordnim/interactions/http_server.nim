@@ -10,6 +10,7 @@ import chronos
 import chronos/apps/http/[httptable, httpserver]
 import httputils
 
+import cordnim/build_info
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import ./verification
@@ -199,7 +200,7 @@ proc newInteractionHttpServer*(bindAddress: TransportAddress,
   let built = HttpServerRef.new(
     bindAddress,
     callback,
-    serverIdent = "cordnim/0.1.0",
+    serverIdent = CordnimServerIdent,
     maxRequestBodySize = verification.maxBodyBytes
   )
   if built.isErr:

@@ -55,17 +55,18 @@ proc scenario(): Future[void] {.async.} =
 
 waitFor scenario()
 
-block hybrid_requires_a_composite_runtime:
+block hybrid_accepts_an_independent_http_runtime_component:
   let application = newDiscordApp(
     RuntimeServices(),
     initAppConfig(ingressHttp, gatewaySubscriptions({giGuildVoiceStates})),
     initCommandSet[RuntimeServices]())
-  doAssertRaises ValueError:
-    discard newInteractionHttpRuntime(
-      application,
-      initTAddress("127.0.0.1:0"),
-      VerificationConfig(
-        allowedSkewSeconds: 300,
-        maxBodyBytes: 1_024,
-        verifier: acceptingVerifier),
-      discordApiBaseUrl = "http://127.0.0.1:1")
+  discard newInteractionHttpRuntime(
+    application,
+    initTAddress("127.0.0.1:0"),
+    VerificationConfig(
+      allowedSkewSeconds: 300,
+      maxBodyBytes: 1_024,
+      verifier: acceptingVerifier),
+    discordApiBaseUrl = "http://127.0.0.1:1")
+  doAssert application.runtimeCount == 1
+  waitFor application.close()

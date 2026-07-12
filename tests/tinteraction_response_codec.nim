@@ -41,6 +41,23 @@ block modal_remains_typed_as_an_initial_callback:
   doAssert encoded["type"].getInt() == 9
   doAssert encoded["data"]["custom_id"].getStr() == "example"
 
+block autocomplete_is_a_real_initial_action:
+  let encoded = ContextResponse(
+    action: raAutocomplete,
+    visibility: vPublic,
+    body: %*{"choices": [{"name": "Nim", "value": "nim"}]}
+  ).initialResponseJson()
+
+  doAssert encoded["type"].getInt() == 8
+  doAssert encoded["data"]["choices"][0]["value"].getStr() == "nim"
+
+  doAssertRaises ResponseCodecError:
+    discard ContextResponse(
+      action: raAutocomplete,
+      visibility: vPublic,
+      body: %*{}
+    ).initialResponseJson()
+
 block webhook_actions_are_rejected_at_the_callback_boundary:
   doAssertRaises ResponseCodecError:
     discard ContextResponse(

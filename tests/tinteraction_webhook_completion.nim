@@ -23,7 +23,7 @@ proc clearObservedRequests() =
   observedRequests.setLen(0)
 
 proc body(request: RawRequest): JsonNode =
-  parseJson(request.body.text())
+  parseJson(request.body.bodyBytes().text())
 
 suite "interaction webhook responses":
   test "keeps deferred completion compatible":

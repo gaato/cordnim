@@ -25,7 +25,8 @@ type
     ikApplicationCommand, ## Slash, user, or message application command.
     ikMessageComponent, ## Button, select, or other component activation.
     ikAutocomplete, ## Focused command-option autocomplete request.
-    ikModalSubmit, ## Submitted modal form.
+    ikCommandModalSubmit, ## Modal submitted after an application command.
+    ikComponentModalSubmit, ## Modal submitted from a message component.
     ikPing ## Discord endpoint-verification ping.
 
   InitialResponseKind* = enum ## Semantic kind of an initial response.
@@ -99,7 +100,9 @@ func allowedInitialKinds*(kind: InteractionType): set[InitialResponseKind] =
       irkModal}
   of ikAutocomplete:
     {irkAutocomplete}
-  of ikModalSubmit:
+  of ikCommandModalSubmit:
+    {irkMessage, irkDeferredMessage}
+  of ikComponentModalSubmit:
     {irkMessage, irkDeferredMessage, irkUpdateMessage, irkDeferredUpdate}
   of ikPing:
     {irkPong}

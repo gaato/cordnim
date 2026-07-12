@@ -4,8 +4,11 @@ import std/[algorithm, json, os, sequtils, sets, strutils, tables]
 
 import chronos
 
+import cordnim/build_info
 import cordnim/core/secrets
 import cordnim/core/ids
+import cordnim/commands/spec as command_spec
+import cordnim/commands/manifest as command_manifest
 import cordnim/raw/request as raw_request
 import cordnim/raw/route as raw_route
 import cordnim/raw/routes/applications
@@ -13,7 +16,8 @@ import cordnim/raw/routes/oauth2
 import cordnim/raw/schema_info
 import cordnim/rest as runtime_rest
 
-const CliVersion* = "0.1.0" ## Version of the installed `cordnim` executable.
+const CliVersion* = CordnimBuildLabel
+  ## Build label reported by the installed `cordnim` executable.
 
 type
   CliError = object of CatchableError
@@ -89,7 +93,191 @@ proc commandArray(document: JsonNode): JsonNode =
     "command manifest must be an array or an object containing commands")
 
 proc validateManifest(document: JsonNode): seq[string] =
-  var names = initHashSet[string]()
+  ## Validates each command by decoding it into a `CommandSpec` and running the
+  ## shared command-layer `validate`, so the CLI enforces the same naming,
+  ## nesting, localization, numeric/string, install, and context rules as the
+  ## compiler and explicit builders instead of a drifting shallow copy.
+  var keys = initHashSet[string]()
+  let commands =
+    try:
+      document.commandArray()
+    except CliError as error:
+      return @[error.msg]
+  for index in 0..<commands.len:
+    let command = commands[index]
+    if command.kind != JObject:
+      result.add $index & ": command must be an object"
+      continue
+    let spec =
+      try:
+        command_manifest.parseCommandSpec(command)
+      except CommandSpecError as error:
+        result.add $index & ": " & error.msg
+        continue
+    try:
+      command_spec.validate(spec)
+    except CommandSpecError as error:
+      result.add spec.name & ": " & error.msg
+    # Discord keys application commands by name and type; validate is per
+    # command, so duplicate identities are checked across the manifest here.
+    let key = spec.name & ":" & $command_spec.discordType(spec.kind)
+    if key in keys:
+      result.add $index & ": duplicate command '" & spec.name &
+        "' of type " & $command_spec.discordType(spec.kind)
+    keys.incl key
+
+proc canonicalize(node: JsonNode): JsonNode =
+  ## Recursively sorts object keys so a JSON object key reorder does not change
+  ## the hash. Array order is preserved because it is semantically meaningful
+  ## for options and choices.
+  case node.kind
+  of JObject:
+    result = newJObject()
+    var keys: seq[string]
+    for key in node.keys:
+      keys.add(key)
+    keys.sort()
+    for key in keys:
+      result[key] = canonicalize(node[key])
+  of JArray:
+    result = newJArray()
+    for item in node:
+      result.add(canonicalize(item))
+  else:
+    result = node
+
+proc manifestHash(document: JsonNode): string =
+  var value = 14695981039346656037'u64
+  for character in $canonicalize(document):
+    value = (value xor uint64(ord(character))) * 1099511628211'u64
+  value.toHex(16).toLowerAscii()
+
+const serverOwnedFields = [
+  "id", "application_id", "guild_id", "version", "cordnim",
+  "name_localized", "description_localized"
+]
+  ## Fields Discord owns in responses or that carry only local runtime
+  ## metadata; they never participate in synchronization comparisons.
+
+proc isDefaultCommandField(command: JsonNode, name: string): bool =
+  ## Reports whether a fetched command field equals a Discord default that our
+  ## manifests omit, so dropping it cannot hide a managed difference.
+  let node = command[name]
+  case name
+  of "nsfw": node.kind == JBool and not node.getBool()
+  of "default_permission": node.kind == JBool and node.getBool()
+  of "default_member_permissions", "dm_permission": node.kind == JNull
+  of "name_localizations", "description_localizations":
+    node.kind == JNull or (node.kind == JObject and node.len == 0)
+  of "options": node.kind == JArray and node.len == 0
+  of "description":
+    # USER and MESSAGE commands cannot carry a description; Discord echoes "".
+    command.getOrDefault("type").getInt(1) != 1 and
+      node.kind == JString and node.getStr().len == 0
+  else: false
+
+proc sortedIntSet(node: JsonNode): JsonNode =
+  ## Returns a sorted, de-duplicated copy of an integer array so unordered
+  ## Discord sets (integration_types, contexts, channel_types) compare equal
+  ## regardless of wire order.
+  if node.kind != JArray:
+    return node
+  var values: seq[int]
+  for item in node:
+    if item.kind == JInt and item.getInt() notin values:
+      values.add(item.getInt())
+  values.sort()
+  result = newJArray()
+  for value in values:
+    result.add(%value)
+
+proc canonicalNumber(node: JsonNode): JsonNode =
+  ## Canonicalizes a NUMBER (Discord type 10) value so 1 and 1.0 compare equal.
+  ## Non-numeric nodes are returned unchanged; INTEGER values are never routed
+  ## here, preserving strict integer semantics.
+  if node.kind in {JInt, JFloat}: %node.getFloat() else: node
+
+proc canonicalNumberChoice(choice: JsonNode): JsonNode =
+  if choice.kind != JObject:
+    return choice
+  result = newJObject()
+  for key in choice.keys:
+    result[key] =
+      if key == "value": canonicalNumber(choice[key]) else: choice[key]
+
+proc normalizedOption(option: JsonNode): JsonNode =
+  ## Drops option defaults Discord echoes but our manifests omit, recursing
+  ## into nested subcommand options so comparisons stay structural. NUMBER
+  ## option ranges and choice values are canonicalized so 1 and 1.0 are equal.
+  if option.kind != JObject:
+    return option
+  result = newJObject()
+  let optionType = option.getOrDefault("type").getInt(0)
+  var names: seq[string]
+  for name in option.keys:
+    case name
+    of "name_localized", "description_localized": continue
+    of "required", "autocomplete":
+      if option[name].kind == JBool and not option[name].getBool(): continue
+    of "name_localizations", "description_localizations":
+      if option[name].kind == JNull or
+          (option[name].kind == JObject and option[name].len == 0): continue
+    of "options":
+      if option[name].kind == JArray and option[name].len == 0: continue
+    else: discard
+    names.add name
+  names.sort()
+  for name in names:
+    if name == "options" and option[name].kind == JArray:
+      var nested = newJArray()
+      for child in option[name]:
+        nested.add(normalizedOption(child))
+      result[name] = nested
+    elif name == "channel_types":
+      result[name] = sortedIntSet(option[name])
+    elif optionType == 10 and name in ["min_value", "max_value"]:
+      result[name] = canonicalNumber(option[name])
+    elif optionType == 10 and name == "choices" and
+        option[name].kind == JArray:
+      var canonical = newJArray()
+      for choice in option[name]:
+        canonical.add(canonicalNumberChoice(choice))
+      result[name] = canonical
+    else:
+      result[name] = option[name]
+
+proc normalizedCommand(command: JsonNode, guildScoped = false): JsonNode =
+  result = newJObject()
+  if command.kind != JObject:
+    return
+  var names: seq[string]
+  for name in command.keys:
+    if name in serverOwnedFields:
+      continue
+    # integration_types and contexts are global-only fields; a guild command
+    # neither sends nor receives them, so they must not enter a guild-scoped
+    # comparison or outbound body.
+    if guildScoped and name in ["integration_types", "contexts"]:
+      continue
+    if command.isDefaultCommandField(name):
+      continue
+    names.add name
+  names.sort()
+  for name in names:
+    if name == "options" and command[name].kind == JArray:
+      var nested = newJArray()
+      for child in command[name]:
+        nested.add(normalizedOption(child))
+      result[name] = nested
+    elif name in ["integration_types", "contexts"]:
+      result[name] = sortedIntSet(command[name])
+    else:
+      result[name] = command[name]
+
+proc commandShapeProblems(document: JsonNode): seq[string] =
+  ## Validates the minimum shape needed to diff a command array (each command an
+  ## object with a string name and, if present, an integer type). Returns
+  ## problems so malformed input becomes a typed CliError, never a Defect.
   let commands =
     try:
       document.commandArray()
@@ -100,50 +288,24 @@ proc validateManifest(document: JsonNode): seq[string] =
     if command.kind != JObject:
       result.add $index & ": command must be an object"
     elif not command.hasKey("name") or command["name"].kind != JString:
-      result.add $index & ": command name is required"
-    else:
-      let name = command["name"].getStr()
-      if name in names:
-        result.add $index & ": duplicate command name '" & name & "'"
-      names.incl name
-      if not command.hasKey("type") or command["type"].kind != JInt:
-        result.add name & ": numeric command type is required"
-      if command.getOrDefault("type").getInt(1) == 1 and
-          (not command.hasKey("description") or
-            command["description"].kind != JString):
-        result.add name & ": chat-input description is required"
+      result.add $index & ": command name must be a string"
+    elif command.hasKey("type") and command["type"].kind != JInt:
+      result.add command["name"].getStr() & ": command type must be an integer"
 
-proc manifestHash(document: JsonNode): string =
-  var value = 14695981039346656037'u64
-  for character in $document:
-    value = (value xor uint64(ord(character))) * 1099511628211'u64
-  value.toHex(16).toLowerAscii()
-
-proc normalizedCommand(command: JsonNode): JsonNode =
-  result = newJObject()
-  if command.kind != JObject:
-    return
-  const serverOwned = [
-    "id", "application_id", "guild_id", "version", "cordnim"
-  ]
-  var names: seq[string]
-  for name in command.keys:
-    if name notin serverOwned:
-      names.add name
-  names.sort()
-  for name in names:
-    result[name] = command[name]
-
-proc normalizedCommands(document: JsonNode): Table[string, JsonNode] =
+proc normalizedCommands(document: JsonNode,
+                        guildScoped = false): Table[string, JsonNode] =
   result = initTable[string, JsonNode]()
   for command in document.commandArray():
-    let kind = if command.hasKey("type"): command["type"].getInt(1) else: 1
-    let key = command["name"].getStr() & ":" & $kind
-    result[key] = command.normalizedCommand()
+    if command.kind != JObject:
+      continue # shape is validated separately; never index a non-object here
+    let kind = command.getOrDefault("type").getInt(1)
+    let key = command.getOrDefault("name").getStr() & ":" & $kind
+    result[key] = command.normalizedCommand(guildScoped)
 
-proc diffCommands(current, desired: JsonNode): seq[string] =
-  let currentByName = current.normalizedCommands()
-  let desiredByName = desired.normalizedCommands()
+proc diffCommands(current, desired: JsonNode,
+                  guildScoped = false): seq[string] =
+  let currentByName = current.normalizedCommands(guildScoped)
+  let desiredByName = desired.normalizedCommands(guildScoped)
   var keys = initHashSet[string]()
   for key in currentByName.keys:
     keys.incl key
@@ -176,14 +338,21 @@ proc makeRawRequest(options: SyncOptions, write: bool,
     if write: bulkSetApplicationCommands else: listApplicationCommands
   else:
     if write: bulkSetGuildApplicationCommands else: listGuildApplicationCommands
+  let guildScoped = options.guildId.len != 0
   var body: JsonNode
   if write:
     body = newJArray()
     # Runtime metadata is useful in the manifest but is not part of Discord's
-    # bulk-overwrite request schema.
+    # bulk-overwrite request schema; global-only fields are dropped for guilds.
     for command in desired.commandArray():
-      body.add(command.normalizedCommand())
-  raw_request.initRawRequest(route, options.syncParameters(), body)
+      body.add(command.normalizedCommand(guildScoped))
+  result = raw_request.initRawRequest(route, options.syncParameters(), body)
+  if not write:
+    # List endpoints return only the requester-locale `name_localized` and
+    # `description_localized` fields by default. Request the full localization
+    # dictionaries so localized manifests compare against complete data instead
+    # of diffing forever. Writes carry localizations in the body, not the query.
+    result.addQuery("with_localizations", "true")
 
 proc performRequest(client: ChronosRestClient,
                     request: raw_request.RawRequest,
@@ -343,7 +512,18 @@ proc runCli*(arguments = commandLineParams()): int =
             raise newException(CliError,
               "unknown diff option: " & arguments[index])
           inc index
-        let changes = diffCommands(loadJson(currentPath), loadJson(desiredPath))
+        let current = loadJson(currentPath)
+        let desired = loadJson(desiredPath)
+        # Desired is the source of truth: full schema validation. Current is
+        # fetched/authored: validate at least its shape so a malformed file is
+        # a typed error instead of a defect during normalization.
+        let desiredProblems = desired.validateManifest()
+        if desiredProblems.len != 0:
+          raise newException(CliError, desiredProblems.join("; "))
+        let currentProblems = current.commandShapeProblems()
+        if currentProblems.len != 0:
+          raise newException(CliError, currentProblems.join("; "))
+        let changes = diffCommands(current, desired)
         for change in changes:
           stdout.writeLine(change)
         return if changes.len == 0: 0 else: 2
@@ -353,15 +533,25 @@ proc runCli*(arguments = commandLineParams()): int =
         let problems = desired.validateManifest()
         if problems.len != 0:
           raise newException(CliError, problems.join("; "))
+        let guildScoped = options.guildId.len != 0
         if options.currentPath.len != 0 and not options.apply:
-          let changes = diffCommands(loadJson(options.currentPath), desired)
+          let current = loadJson(options.currentPath)
+          let currentProblems = current.commandShapeProblems()
+          if currentProblems.len != 0:
+            raise newException(CliError, currentProblems.join("; "))
+          let changes = diffCommands(current, desired, guildScoped)
           for change in changes:
             stdout.writeLine(change)
           if changes.len > 0:
             stdout.writeLine("Dry run: no Discord state changed.")
           return if changes.len == 0: 0 else: 2
         let current = waitFor(discordRequest(options, desired, false))
-        let changes = diffCommands(current, desired)
+        let liveProblems = current.commandShapeProblems()
+        if liveProblems.len != 0:
+          raise newException(CliError,
+            "Discord returned malformed command data: " &
+              liveProblems.join("; "))
+        let changes = diffCommands(current, desired, guildScoped)
         if changes.len == 0:
           stdout.writeLine("No command changes.")
           return 0

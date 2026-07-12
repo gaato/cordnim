@@ -11,8 +11,13 @@ type
     value*: float64 ## Value in the unit documented by `name`.
     attributes*: seq[MetricAttribute] ## Low-cardinality dimensions.
 
-  MetricRecorder* = proc (sample: MetricSample) {.closure.} ## Synchronous sink
-    ## for one observation; the adapter owns aggregation and export.
+  MetricRecorder* = proc(sample: MetricSample) {.closure, gcsafe, raises: [].}
+    ## Synchronous, non-raising sink for one observation.
+    ##
+    ## A recorder is a passive observer: it must enqueue or account for the
+    ## sample quickly and must never raise or block, because the runtime treats
+    ## metric emission as infallible and does not guard the call. The adapter
+    ## owns aggregation and export.
 
 const
   interactionAckLatency* = "interaction_ack_latency" ## Milliseconds from
@@ -51,19 +56,20 @@ const
   voiceJitter* = "voice_jitter" ## Milliseconds of packet-arrival jitter.
   voiceDecodeDelay* = "voice_decode_delay" ## Milliseconds for audio decoding.
 
-func metricAttribute*(key, value: string): MetricAttribute =
+func metricAttribute*(key, value: string): MetricAttribute {.raises: [].} =
   ## Creates one already-redacted metric attribute.
   MetricAttribute(key: key, value: value)
 
 func metricSample*(name: string, value: float64,
-                   attributes: openArray[MetricAttribute] = []): MetricSample =
+                   attributes: openArray[MetricAttribute] = []): MetricSample
+    {.raises: [].} =
   ## Creates one observation and copies its attributes without aggregation or
   ## validation.
   MetricSample(name: name, value: value, attributes: @attributes)
 
-proc record*(recorder: MetricRecorder, sample: sink MetricSample) =
+proc record*(recorder: MetricRecorder, sample: sink MetricSample) {.raises: [].} =
   ## Forwards exactly one observation; a nil recorder is a no-op.
-  if recorder != nil:
+  if not recorder.isNil:
     recorder(sample)
 
 func standardMetricNames*(): seq[string] =

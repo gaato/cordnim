@@ -6,5 +6,5 @@
   "standardSpec": "discord-api-spec/openapi.json",
   "standardSpecSha256": "ce7cb08e4d2542ddba338315b1e78dc1bb7eaf16f8d298b582b70d61e259ea72",
   "overlay": "semantic-overlay.json",
-  "overlayRevision": 2
+  "overlayRevision": 3
 }

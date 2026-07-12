@@ -5,7 +5,7 @@ import cordnim/core/permissions
 
 template discordCommand*(
     name: static[string];
-    description: static[string];
+    description: static[string] = "";
     installs: static[set[CommandInstallContext]] = {guildInstall};
     contexts: static[set[CommandInteractionContext]] = {guildChannel};
     kind: static[CommandKind] = ckChatInput;

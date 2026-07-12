@@ -4,11 +4,14 @@
 ## `stickers` field. Moving a handle from Legacy to V2 is explicit and no
 ## reverse operation is provided.
 
-import std/options
+import std/[hashes, options]
 
 import cordnim/core/ids
 
 type
+  ComponentId* = distinct uint32 ## Message-local integer identity assigned to
+                                 ## a component by the application or Discord.
+
   Legacy* = object ## Phantom type for a legacy Discord message.
   V2* = object ## Phantom type for a Components V2 Discord message.
 
@@ -85,6 +88,7 @@ type
 
   ComponentNode* = ref object ## Mutable construction node validated before
                               ## send.
+    id*: Option[ComponentId] ## Optional message-local component identity.
     kind*: MessageComponentKind ## Node kind.
     text*: string ## Text, label, URL, or upload reference by kind.
     customId*: string ## Application-owned interaction identifier.
@@ -128,6 +132,26 @@ type
     channelId*: ChannelId ## Channel containing the message.
     messageId*: MessageId ## Existing message snowflake.
 
+func toComponentId*(value: uint32): ComponentId {.inline.} =
+  ## Explicitly wraps a 32-bit component ID at a protocol boundary.
+  ComponentId(value)
+
+func toUint32*(id: ComponentId): uint32 {.inline.} =
+  ## Returns the integer wire representation of a component ID.
+  uint32(id)
+
+func `==`*(left, right: ComponentId): bool {.inline.} =
+  ## Compares two component IDs by their wire value.
+  uint32(left) == uint32(right)
+
+func hash*(id: ComponentId): Hash {.inline.} =
+  ## Hashes a component ID for use in sets and tables.
+  hash(uint32(id))
+
+func `$`*(id: ComponentId): string =
+  ## Formats a component ID as an unsigned decimal integer.
+  $uint32(id)
+
 func legacyMessage*(content = ""): MessageDraft[Legacy] =
   ## Creates a legacy draft. Empty content remains omitted.
   if content.len == 0:
@@ -147,9 +171,11 @@ func component*(kind: MessageComponentKind, text = "", customId = "",
                 description = "", spoiler = false,
                 accentColor = none(int), divider = none(bool),
                 spacing = none(SeparatorSpacing),
-                children: seq[ComponentNode] = @[]): ComponentNode =
+                children: seq[ComponentNode] = @[],
+                id = none(ComponentId)): ComponentNode =
   ## Creates a raw high-level node for dynamic component construction.
   ComponentNode(
+    id: id,
     kind: kind,
     text: text,
     customId: customId,
@@ -173,23 +199,28 @@ func component*(kind: MessageComponentKind, text = "", customId = "",
     children: children
   )
 
-func textDisplay*(text: string): ComponentNode =
+func textDisplay*(text: string; id = none(ComponentId)): ComponentNode =
   ## Creates a markdown text display.
-  component(mckTextDisplay, text = text)
+  component(mckTextDisplay, text = text, id = id)
 
 func button*(label: string, customId = "", url = "",
              disabled = false, style = bsPrimary,
-             emoji = none(ComponentEmoji)): ComponentNode =
+             emoji = none(ComponentEmoji),
+             id = none(ComponentId)): ComponentNode =
   ## Creates an interactive button or, when `url` is set, a link button.
   component(mckButton, text = label, customId = customId, url = url,
     disabled = disabled,
-    buttonStyle = (if url.len != 0: bsLink else: style), emoji = emoji)
+    buttonStyle = (if url.len != 0: bsLink else: style), emoji = emoji,
+    id = id)
 
-func premiumButton*(skuId: SkuId, label = "",
-                    disabled = false): ComponentNode =
+func premiumButton*(skuId: SkuId; disabled = false,
+                    id = none(ComponentId)): ComponentNode =
   ## Creates a premium button tied to an application SKU.
-  component(mckButton, text = label, disabled = disabled,
-    buttonStyle = bsPremium, skuId = some(skuId))
+  ##
+  ## Discord forbids labels and emoji on premium buttons; callers that need a
+  ## caption should place a Text Display next to the button.
+  component(mckButton, disabled = disabled,
+    buttonStyle = bsPremium, skuId = some(skuId), id = id)
 
 func componentEmoji*(name: string; id = none(EmojiId);
                      animated = false): ComponentEmoji =
@@ -222,7 +253,8 @@ func defaultChannel*(id: ChannelId): SelectDefaultValue =
 
 func stringSelect*(customId: string, options: openArray[SelectOption],
                    placeholder = "", minValues = 1, maxValues = 1,
-                   disabled = false): ComponentNode =
+                   disabled = false,
+                   id = none(ComponentId)): ComponentNode =
   ## Creates a string select with explicit choices.
   component(
     mckStringSelect,
@@ -231,67 +263,84 @@ func stringSelect*(customId: string, options: openArray[SelectOption],
     placeholder = placeholder,
     minValues = minValues,
     maxValues = maxValues,
-    options = @options
+    options = @options,
+    id = id
   )
 
 func userSelect*(customId: string, placeholder = "", minValues = 1,
                  maxValues = 1, disabled = false,
-                 defaults: seq[SelectDefaultValue] = @[]): ComponentNode =
+                 defaults: seq[SelectDefaultValue] = @[],
+                 id = none(ComponentId)): ComponentNode =
   ## Creates a user select; `validate` requires every default to come from
   ## `defaultUser` and checks selection bounds.
   component(mckUserSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
-    defaultValues = defaults)
+    defaultValues = defaults, id = id)
 
 func roleSelect*(customId: string, placeholder = "", minValues = 1,
                  maxValues = 1, disabled = false,
-                 defaults: seq[SelectDefaultValue] = @[]): ComponentNode =
+                 defaults: seq[SelectDefaultValue] = @[],
+                 id = none(ComponentId)): ComponentNode =
   ## Creates a role select; `validate` requires every default to come from
   ## `defaultRole` and checks selection bounds.
   component(mckRoleSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
-    defaultValues = defaults)
+    defaultValues = defaults, id = id)
 
 func mentionableSelect*(customId: string, placeholder = "", minValues = 1,
                         maxValues = 1, disabled = false,
-                        defaults: seq[SelectDefaultValue] = @[]):
+                        defaults: seq[SelectDefaultValue] = @[],
+                        id = none(ComponentId)):
                         ComponentNode =
   ## Creates a mentionable select; defaults may come from `defaultUser` or
   ## `defaultRole`, with bounds checked by `validate`.
   component(mckMentionableSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
-    defaultValues = defaults)
+    defaultValues = defaults, id = id)
 
 func channelSelect*(customId: string, placeholder = "", minValues = 1,
                     maxValues = 1, disabled = false,
                     defaults: seq[SelectDefaultValue] = @[],
-                    channelTypes: seq[MessageChannelType] = @[]):
+                    channelTypes: seq[MessageChannelType] = @[],
+                    id = none(ComponentId)):
                     ComponentNode =
   ## Creates a channel select; defaults must come from `defaultChannel`, and an
   ## empty `channelTypes` leaves Discord unfiltered.
   component(mckChannelSelect, customId = customId, disabled = disabled,
     placeholder = placeholder, minValues = minValues, maxValues = maxValues,
-    defaultValues = defaults, channelTypes = channelTypes)
+    defaultValues = defaults, channelTypes = channelTypes, id = id)
 
 func actionRow*(children: varargs[ComponentNode]): ComponentNode =
   ## Groups buttons or one select in an action row.
   component(mckActionRow, children = @children)
 
+func actionRow*(id: Option[ComponentId];
+                children: varargs[ComponentNode]): ComponentNode =
+  ## Groups buttons or one select and explicitly controls the row ID.
+  component(mckActionRow, children = @children, id = id)
+
 func section*(children: varargs[ComponentNode]): ComponentNode =
   ## Creates a section from text displays and exactly one accessory.
   component(mckSection, children = @children)
 
-func thumbnail*(url: string, description = "", spoiler = false): ComponentNode =
+func section*(id: Option[ComponentId];
+              children: varargs[ComponentNode]): ComponentNode =
+  ## Creates a section and explicitly controls its component ID.
+  component(mckSection, children = @children, id = id)
+
+func thumbnail*(url: string, description = "", spoiler = false,
+                id = none(ComponentId)): ComponentNode =
   ## Creates a thumbnail that `validate` accepts only as the single accessory
   ## of a section.
   component(mckThumbnail, url = url, description = description,
-    spoiler = spoiler)
+    spoiler = spoiler, id = id)
 
 func separator*(spacing = none(SeparatorSpacing),
-                divider = none(bool)): ComponentNode =
+                divider = none(bool),
+                id = none(ComponentId)): ComponentNode =
   ## Creates a separator, omitting `spacing` or `divider` when their options
   ## are unset.
-  component(mckSeparator, spacing = spacing, divider = divider)
+  component(mckSeparator, spacing = spacing, divider = divider, id = id)
 
 func mediaItem*(url: string, description = "", spoiler = false): ComponentNode =
   ## Creates an item for a media gallery.
@@ -303,13 +352,24 @@ func mediaGallery*(children: varargs[ComponentNode]): ComponentNode =
   ## children.
   component(mckMediaGallery, children = @children)
 
-func fileComponent*(uploadReference: string, spoiler = false): ComponentNode =
+func mediaGallery*(id: Option[ComponentId];
+                   children: varargs[ComponentNode]): ComponentNode =
+  ## Creates a gallery and explicitly controls its component ID.
+  component(mckMediaGallery, children = @children, id = id)
+
+func fileComponent*(uploadReference: string, spoiler = false,
+                    id = none(ComponentId)): ComponentNode =
   ## Creates a file component referring to an uploaded attachment.
-  component(mckFile, text = uploadReference, spoiler = spoiler)
+  component(mckFile, text = uploadReference, spoiler = spoiler, id = id)
 
 func container*(children: varargs[ComponentNode]): ComponentNode =
   ## Creates a styled Components V2 container.
   component(mckContainer, children = @children)
+
+func container*(id: Option[ComponentId];
+                children: varargs[ComponentNode]): ComponentNode =
+  ## Creates a container and explicitly controls its component ID.
+  component(mckContainer, children = @children, id = id)
 
 func v2Draft*(children: varargs[ComponentNode]): MessageDraft[V2] =
   ## Creates a dynamic V2 draft. Call `validate` before serialization.

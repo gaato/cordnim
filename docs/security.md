@@ -62,8 +62,8 @@ host.
 
 ## Gateway transport
 
-Status `websock` owns the RFC 6455 handshake, TLS, masking, framing, control
-frames, and fragmentation. Cordnim caps the complete message after fragment
+The Status `websock` library owns the RFC 6455 handshake, TLS, masking, framing,
+control frames, and fragmentation. Cordnim caps the complete message after fragment
 assembly and rejects invalid UTF-8 close reasons.
 
 The pinned `websock` source misparses close payloads. Cordnim applies the
@@ -77,6 +77,45 @@ removing the replacement.
 operations. Shutdown cancels and joins active I/O before starting the close
 path. Cancellation aborts the connection when a graceful handshake would make
 an in-flight message's delivery ambiguous.
+
+Gateway `zlib-stream` decoding keeps one native inflate context for the whole
+connection. Compressed input and inflated output have separate limits. A decode
+error reports the violated rule without embedding payload bytes. The context is
+move-only and releases its native state once on close or destruction.
+
+## Gateway coordination
+
+A multi-process deployment must provide a coordination backend whose lease,
+session, and IDENTIFY operations implement the `GatewayCoordination` contract.
+The process-local adapter is not a cross-process lock.
+
+Every shard lease carries a fencing token. Renew, release, resume-state read,
+and resume-state write require the current token. A paused process whose lease
+expired cannot overwrite or reuse the new owner's session. IDENTIFY reservations
+remain consumed after they are granted because Discord may have observed the
+attempt.
+
+Adapter exceptions can contain connection strings, server replies, or tenant
+details. Operator logs should use `GatewayCoordinationError.diagnostic`, which
+contains only the stable error kind and code. The shard runner translates other
+backend failures to a fixed reason.
+
+## Dispatch and cached payloads
+
+Gateway dispatch queues are bounded. Sequence state advances only after a queue
+admits the event. Overload aborts the connection and resumes from the last
+admitted sequence instead of dropping an event or logging its body.
+
+`DispatchErrorContext` contains event name, shard, sequence, lane, and exception
+type. It excludes the event payload and exception message. Treat even event names
+and entity IDs as operational metadata and avoid adding raw payloads to a custom
+observer.
+
+The entity cache stores serialized semantic JSON and parses a fresh node for
+each lookup. This prevents a caller-held mutable alias from changing cached
+state. It does not make Discord payloads safe to log or persist indefinitely.
+Choose TTL and LRU bounds according to the application's data-retention policy,
+and disable entity classes that handlers do not need.
 
 ## Components and route signatures
 

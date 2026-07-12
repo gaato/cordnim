@@ -1,4 +1,4 @@
-import std/[atomics, json, options, unittest]
+import std/[atomics, json, options, strutils, unittest]
 
 import chronos
 
@@ -13,6 +13,7 @@ type RouterServices = object
 var cancellationProbeStarted: Atomic[bool]
 var cancellationProbeStopped: Atomic[bool]
 var invalidResponseProbeStopped: Atomic[bool]
+var restrictedHandlerCalled: Atomic[bool]
 
 proc greet(ctx: CommandCtx[RouterServices], name: string):
     Future[CommandResult]
@@ -110,14 +111,42 @@ proc invalidResponseProbe(ctx: CommandCtx[RouterServices]):
     invalidResponseProbeStopped.store(true)
   return succeeded("unreachable")
 
+proc inspectSlash(ctx: CommandCtx[RouterServices]): CommandResult
+    {.discordCommand(name = "inspect", description = "Inspect a resource").} =
+  succeeded("slash")
+
+proc inspectUser(ctx: CommandCtx[RouterServices]): CommandResult
+    {.discordCommand(name = "inspect", kind = ckUser).} =
+  succeeded("user:" & $ctx.targetUser().get())
+
+proc inspectMessage(ctx: CommandCtx[RouterServices]): CommandResult
+    {.discordCommand(name = "inspect", kind = ckMessage).} =
+  succeeded("message:" & $ctx.targetMessage().get())
+
+proc inspectMixedCase(ctx: CommandCtx[RouterServices]): CommandResult
+    {.discordCommand(name = "Inspect User", kind = ckUser).} =
+  succeeded("mixed:" & $ctx.targetUser().get())
+
+proc restricted(ctx: CommandCtx[RouterServices]): CommandResult
+    {.discordCommand(
+      name = "restricted",
+      description = "Exercise command availability"
+    ).} =
+  restrictedHandlerCalled.store(true)
+  succeeded("unexpected")
+
 proc payload(): JsonNode =
   %*{
     "id": "100",
     "application_id": "200",
     "type": 2,
     "token": "not-logged",
+    "context": 0,
+    "guild_id": "300",
+    "authorizing_integration_owners": {"0": "300"},
     "data": {
       "name": "greet",
+      "type": 1,
       "options": [{"name": "name", "type": 3, "value": "Nim"}]
     },
     "user": {"id": "42"}
@@ -183,21 +212,34 @@ proc userCommandPayload(): JsonNode =
     "resolved": {"users": {"99": {"id": "99", "username": "target"}}}
   }
 
+proc commandPayload(name: string, kind: int, targetId = ""): JsonNode =
+  result = payload()
+  result["data"] = %*{
+    "name": name,
+    "type": kind
+  }
+  if targetId.len != 0:
+    result["data"]["target_id"] = %targetId
+
 suite "shared interaction router":
-  test "HTTP-style routing decodes typed command options":
+  test "HTTP command ingress runs through the shared dispatcher":
     proc scenario(): Future[JsonNode] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressHttp), commandSet(greet))
-      let router = newCommandRouter(application)
-      let response = await router.route(payload(), monotonicMillis())
-      await router.close()
-      return response
+      let dispatcher = newInteractionDispatcher(application)
+      let response = await dispatcher.asHttpHandler()(
+        payload().jsonBytes(), monotonicMillis())
+      await dispatcher.close()
+      var text = newString(response.body.len)
+      for index, value in response.body:
+        text[index] = char(value)
+      return parseJson(text)
     let response = waitFor scenario()
     check response["type"].getInt() == 4
     check response["data"]["content"].getStr() == "Hello Nim"
     check response["data"]["allowed_mentions"]["parse"].len == 0
 
-  test "Gateway ingress uses the same command dispatcher":
+  test "Gateway command ingress runs through the shared dispatcher":
     proc sender(response: JsonNode): Future[void]
         {.gcsafe, raises: [].} =
       doAssert response.getOrDefault("data").getOrDefault("content").getStr() ==
@@ -209,10 +251,96 @@ suite "shared interaction router":
     proc scenario(): Future[void] {.async.} =
       let application = newDiscordApp(
         RouterServices(), initAppConfig(ingressGateway), commandSet(greet))
-      let router = newCommandRouter(application)
-      await router.routeGateway(payload(), monotonicMillis(), sender)
-      await router.close()
+      let dispatcher = newInteractionDispatcher(application)
+      await dispatcher.asGatewayHandler()(payload(), monotonicMillis(), sender)
+      await dispatcher.close()
     waitFor scenario()
+
+  test "routes the same spelling by Discord command kind":
+    proc scenario(): Future[seq[JsonNode]] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp),
+        commandSet(inspectMessage, inspectSlash, inspectUser))
+      let router = newCommandRouter(application)
+      result.add await router.route(
+        commandPayload("inspect", 1), monotonicMillis())
+      result.add await router.route(
+        commandPayload("inspect", 2, "91"), monotonicMillis())
+      result.add await router.route(
+        commandPayload("inspect", 3, "92"), monotonicMillis())
+      await router.close()
+
+    let responses = waitFor scenario()
+    check responses[0]["data"]["content"].getStr() == "slash"
+    check responses[1]["data"]["content"].getStr() == "user:91"
+    check responses[2]["data"]["content"].getStr() == "message:92"
+
+  test "routes a mixed-case context-menu command name":
+    proc scenario(): Future[JsonNode] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp),
+        commandSet(inspectMixedCase))
+      let router = newCommandRouter(application)
+      result = await router.route(
+        commandPayload("Inspect User", 2, "93"), monotonicMillis())
+      await router.close()
+
+    let response = waitFor scenario()
+    check response["data"]["content"].getStr() == "mixed:93"
+
+  test "requires a target exactly for context-menu commands":
+    let missingUserTarget = commandPayload("inspect", 2)
+    expect InteractionDecodeError:
+      discard missingUserTarget.commandInvocation()
+
+    let missingMessageTarget = commandPayload("inspect", 3)
+    expect InteractionDecodeError:
+      discard missingMessageTarget.commandInvocation()
+
+    let unexpectedSlashTarget = commandPayload("inspect", 1, "94")
+    expect InteractionDecodeError:
+      discard unexpectedSlashTarget.commandInvocation()
+
+  test "rejects malformed command option containers and children":
+    var wrongContainer = commandPayload("inspect", 1)
+    wrongContainer["data"]["options"] = %*{"name": "value"}
+    expect InteractionDecodeError:
+      discard wrongContainer.commandInvocation()
+
+    var wrongChild = commandPayload("inspect", 1)
+    wrongChild["data"]["options"] = %*[1]
+    expect InteractionDecodeError:
+      discard wrongChild.commandInvocation()
+
+    var wrongNested = commandPayload("inspect", 1)
+    wrongNested["data"]["options"] = %*[
+      {"name": "group", "options": {"name": "child"}}
+    ]
+    expect InteractionDecodeError:
+      discard wrongNested.commandInvocation()
+
+  test "rejects install and surface mismatches before dispatch":
+    restrictedHandlerCalled.store(false)
+
+    proc scenario(): Future[seq[JsonNode]] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(restricted))
+      let router = newCommandRouter(application)
+
+      var wrongInstall = commandPayload("restricted", 1)
+      wrongInstall["authorizing_integration_owners"] = %*{"1": "42"}
+      result.add await router.route(wrongInstall, monotonicMillis())
+
+      var wrongSurface = commandPayload("restricted", 1)
+      wrongSurface["context"] = %1
+      result.add await router.route(wrongSurface, monotonicMillis())
+      await router.close()
+
+    let responses = waitFor scenario()
+    check not restrictedHandlerCalled.load()
+    for response in responses:
+      check response["data"]["flags"].getInt() == 64
+      check response["data"]["content"].getStr().contains("unavailable")
 
   test "auto-defer returns promptly and retains the completion task":
     var completed: Atomic[bool]
@@ -441,6 +569,7 @@ suite "shared interaction router":
 
   test "context-menu targets are typed and resolved data stays lossless":
     let invocation = userCommandPayload().commandInvocation()
+    check invocation.kind == ckUser
     check invocation.target.get().kind == ctkUser
     check $invocation.target.get().targetUserId == "99"
     check invocation.resolved["users"]["99"]["username"].getStr() == "target"
@@ -529,8 +658,10 @@ suite "shared interaction router":
         discard await handler(
           invalidResponseProbePayload().jsonBytes(), monotonicMillis())
         doAssert false, "invalid response unexpectedly reached HTTP delivery"
-      except ResponseCodecError:
-        discard
+      except CommandApplicationError as error:
+        # The handler's invalid-response failure is redacted at the pre-ack
+        # command boundary, so its detail never crosses into the transport.
+        doAssert error.msg == "command application failed before acknowledgement"
       doAssert invalidResponseProbeStopped.load()
       await router.close()
 
@@ -554,3 +685,44 @@ suite "shared interaction router":
     doAssertRaises ValueError:
       discard gatewayRouter.asHttpHandler()
     waitFor gatewayRouter.close()
+
+  test "a retained router reference rejects every operation after close":
+    proc scenario(): Future[int] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(greet))
+      let router = newCommandRouter(application)
+      await router.close()
+      var rejected = 0
+      try:
+        discard await router.route(payload(), monotonicMillis())
+      except CommandRouterClosedError:
+        inc rejected
+      try:
+        discard await router.selectResponse(payload(), monotonicMillis())
+      except CommandRouterClosedError:
+        inc rejected
+      # A handler obtained after close still rejects at call time.
+      let handler = router.asHttpHandler()
+      try:
+        discard await handler(payload().jsonBytes(), monotonicMillis())
+      except CommandRouterClosedError:
+        inc rejected
+      return rejected
+
+    check waitFor(scenario()) == 3
+
+  test "concurrent and repeated close share one join-safe shutdown":
+    proc scenario(): Future[bool] {.async.} =
+      let application = newDiscordApp(
+        RouterServices(), initAppConfig(ingressHttp), commandSet(greet))
+      let router = newCommandRouter(application)
+      # Both calls are issued before the first await, so they must share one
+      # shutdown rather than race two cancellations of the same scope.
+      let firstClose = router.close()
+      let secondClose = router.close()
+      await firstClose
+      await secondClose
+      await router.close()          # a later repeat close is still safe
+      return true
+
+    check waitFor scenario()

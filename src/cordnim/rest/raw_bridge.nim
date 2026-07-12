@@ -33,7 +33,7 @@ func toRuntimeRequest*(raw: raw_request.RawRequest,
     result.headers.add((header.name, header.value))
   if not raw.body.isNil:
     let serialized = $raw.body
-    result.body = newSeq[byte](serialized.len)
+    var encoded = newSeq[byte](serialized.len)
     for index, value in serialized:
-      result.body[index] = byte(ord(value))
-    result.headers.add(("Content-Type", "application/json"))
+      encoded[index] = byte(ord(value))
+    result.body = runtime_request.jsonBody(encoded)

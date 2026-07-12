@@ -2,11 +2,16 @@
 
 import std/[options, sequtils, sets, unicode]
 
+import cordnim/core/ids
 import ./model
 
 const
   MaxMessageComponents* = 40 ## Discord's total Components V2 node limit.
-  MaxCustomIdBytes* = 100 ## Maximum UTF-8 bytes in a component custom ID.
+  MaxMessageRootComponents* = 40 ## Maximum root entries in a V2 message.
+  MaxContainerComponents* = 40 ## Maximum direct children in a container.
+  MaxCustomIdLength* = 100 ## Maximum characters in a component custom ID.
+  MaxCustomIdBytes* = MaxCustomIdLength ## Compatibility name; validation uses
+    ## Unicode characters, matching Discord's documented limit.
 
 type
   ComponentProblemKind* = enum ## Stable categories returned by validation.
@@ -22,6 +27,7 @@ type
     cpkMissingValue, ## Required text, URL, or upload reference is empty.
     cpkInvalidSelect, ## Select values or options violate Discord limits.
     cpkDuplicateCustomId, ## Interactive IDs collide within one message.
+    cpkDuplicateId, ## Nonzero integer component IDs collide in one message.
     cpkInvalidMedia, ## Media metadata violates Discord limits.
     cpkInvalidStyle ## Style-specific fields are inconsistent.
 
@@ -55,12 +61,15 @@ proc countComponentsImpl(node: ComponentNode,
   visiting.incl identity
   defer:
     visiting.excl identity
-  result = 1
+  # Media-gallery items have no component `type` or `id` and therefore do not
+  # consume Discord's component-object budget.
+  result = ord(node.kind != mckMediaItem)
   for child in node.children:
     result += child.countComponentsImpl(visiting)
 
 proc countComponents*(node: ComponentNode): int =
-  ## Counts `node` and all descendants against Discord's total limit.
+  ## Counts component objects in `node` and its descendants against Discord's
+  ## total limit. Media-gallery items are media objects and are not counted.
   ##
   ## Raises `ValueError` if the public mutable node graph contains a cycle.
   var visiting: HashSet[pointer]
@@ -75,6 +84,7 @@ func isSelect(kind: MessageComponentKind): bool =
 proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
                   path: string, validation: var ComponentValidation,
                   customIds: var HashSet[string],
+                  componentIds: var HashSet[uint32],
                   visiting: var HashSet[pointer], total: var int) =
   if node.isNil:
     validation.addProblem(cpkInvalidChild, path, "component node is nil")
@@ -88,12 +98,26 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
   visiting.incl identity
   defer:
     visiting.excl identity
-  inc total
+  if node.kind != mckMediaItem:
+    inc total
 
-  if node.customId.len > MaxCustomIdBytes:
+  if node.kind == mckMediaItem and node.id.isSome:
+    validation.addProblem(cpkInvalidMedia, path,
+      "media gallery items are media objects and cannot carry component IDs")
+  elif node.id.isSome:
+    let id = node.id.get().toUint32()
+    # Discord treats zero like an omitted ID and replaces it automatically.
+    if id != 0:
+      if id in componentIds:
+        validation.addProblem(cpkDuplicateId, path,
+          "nonzero component id is duplicated within the message")
+      else:
+        componentIds.incl id
+
+  if node.customId.runeLen > MaxCustomIdLength:
     validation.addProblem(
       cpkCustomIdTooLong, path,
-      "custom_id exceeds " & $MaxCustomIdBytes & " UTF-8 bytes"
+      "custom_id exceeds " & $MaxCustomIdLength & " characters"
     )
 
   if node.customId.len != 0:
@@ -106,6 +130,9 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
   if node.kind.isSelect and node.customId.len == 0:
     validation.addProblem(cpkMissingCustomId, path, "select requires custom_id")
   if node.kind.isSelect:
+    if node.required.isSome:
+      validation.addProblem(cpkInvalidSelect, path,
+        "required is legal only for selects inside modal labels")
     if node.minValues < 0 or node.maxValues < node.minValues or
         node.maxValues > 25:
       validation.addProblem(
@@ -118,6 +145,10 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
     if node.defaultValues.len > 25:
       validation.addProblem(cpkInvalidSelect, path,
         "select has more than 25 default values")
+    if node.defaultValues.len > 0 and
+        node.defaultValues.len notin node.minValues..node.maxValues:
+      validation.addProblem(cpkInvalidSelect, path,
+        "default value count must satisfy min_values and max_values")
     if node.kind == mckStringSelect:
       if node.options.len notin 1..25:
         validation.addProblem(
@@ -134,6 +165,11 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
             option.description.runeLen > 100:
           validation.addProblem(cpkInvalidSelect, path,
             "string select option fields exceed Discord's length limits")
+      let selectedCount = node.options.countIt(it.default)
+      if selectedCount > 0 and
+          selectedCount notin node.minValues..node.maxValues:
+        validation.addProblem(cpkInvalidSelect, path,
+          "default option count must satisfy min_values and max_values")
       if node.defaultValues.len != 0:
         validation.addProblem(cpkInvalidSelect, path,
           "string select defaults belong on individual options")
@@ -142,6 +178,7 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         cpkInvalidSelect, path,
         "auto-populated selects cannot carry string options"
       )
+    var seenDefaults: HashSet[string]
     for value in node.defaultValues:
       let compatible = case node.kind
         of mckUserSelect: value.kind == sdkUser
@@ -152,6 +189,15 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
       if not compatible:
         validation.addProblem(cpkInvalidSelect, path,
           "default value kind does not match the select kind")
+      let key = case value.kind
+        of sdkUser: "user:" & $value.userId
+        of sdkRole: "role:" & $value.roleId
+        of sdkChannel: "channel:" & $value.channelId
+      if key in seenDefaults:
+        validation.addProblem(cpkInvalidSelect, path,
+          "select default values must be unique")
+      else:
+        seenDefaults.incl key
     if node.kind != mckChannelSelect and node.channelTypes.len != 0:
       validation.addProblem(cpkInvalidSelect, path,
         "channel_types is legal only on a channel select")
@@ -162,9 +208,10 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         node.emoji.isNone:
       validation.addProblem(cpkMissingValue, path, "button requires a label")
     if node.buttonStyle == bsPremium:
-      if node.skuId.isNone or node.customId.len != 0 or node.url.len != 0:
+      if node.skuId.isNone or node.customId.len != 0 or node.url.len != 0 or
+          node.text.len != 0 or node.emoji.isSome:
         validation.addProblem(cpkInvalidStyle, path,
-          "premium button requires only sku_id as its target")
+          "premium button permits sku_id but not label, emoji, custom_id, or URL")
     elif node.skuId.isSome:
       validation.addProblem(cpkInvalidStyle, path,
         "sku_id is legal only on a premium button")
@@ -269,6 +316,10 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
         node.accentColor.get() notin 0..0xff_ff_ff:
       validation.addProblem(cpkInvalidStyle, path,
         "container accent color must be a 24-bit RGB value")
+    if node.children.len > MaxContainerComponents:
+      validation.addProblem(cpkTooManyComponents, path,
+        "container has more than " & $MaxContainerComponents &
+          " direct components")
   else:
     discard
 
@@ -282,7 +333,7 @@ proc validateNode(node: ComponentNode, parent: Option[MessageComponentKind],
 
   for index, child in node.children:
     child.validateNode(some(node.kind), path & "." & $index, validation,
-      customIds, visiting, total)
+      customIds, componentIds, visiting, total)
 
 proc validate*(draft: MessageDraft[V2]): ComponentValidation =
   ## Validates the complete V2 tree before serialization or transport.
@@ -292,10 +343,15 @@ proc validate*(draft: MessageDraft[V2]): ComponentValidation =
     mckFile, mckSeparator, mckContainer
   }
   var customIds: HashSet[string]
+  var componentIds: HashSet[uint32]
   var visiting: HashSet[pointer]
   if draft.v2.children.len == 0:
     result.addProblem(cpkInvalidRoot, "$",
       "Components V2 message requires at least one component")
+  elif draft.v2.children.len > MaxMessageRootComponents:
+    result.addProblem(cpkTooManyComponents, "$",
+      "message has more than " & $MaxMessageRootComponents &
+        " root components")
   for index, node in draft.v2.children:
     if node.isNil or node.kind notin legalRoots:
       result.addProblem(
@@ -303,7 +359,7 @@ proc validate*(draft: MessageDraft[V2]): ComponentValidation =
         "component kind is not legal at the message root"
       )
     node.validateNode(none(MessageComponentKind), $index, result, customIds,
-      visiting, total)
+      componentIds, visiting, total)
   if total > MaxMessageComponents:
     result.addProblem(
       cpkTooManyComponents, "$",

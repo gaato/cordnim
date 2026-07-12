@@ -4,12 +4,16 @@
 ## in independent buckets execute concurrently. Every spawned transport task is
 ## retained and cancelled or reaped during `stop`.
 
-import std/tables
+import std/[options, tables]
 
 import chronos
 
-import cordnim/core/errors
+import cordnim/core/errors as cordErrors
 import ./[request, scheduler]
+
+const
+  MaxSchedulerWaitChunkMs* = 60_000'i64
+    ## Long scheduler waits are rechecked at least once per minute.
 
 type
   TransportResponse* = object ## Response returned by a concrete HTTP adapter.
@@ -21,12 +25,17 @@ type
   RestTransport* = proc(request: RawRequest): Future[TransportResponse]
     {.gcsafe, raises: [].} ## Async HTTP adapter invoked after scheduling.
 
+  ActiveTransport = object
+    cancellationId: Option[uint64]
+    future: Future[void]
+    cancellationRequested: bool
+
   ChronosRestClient* = ref object ## Running central scheduler and task owner.
     scheduler: Scheduler
     transport: RestTransport
     wake: AsyncEvent
     pending: Table[ScheduledRequestId, Future[TransportResponse]]
-    transportTasks: seq[Future[void]]
+    transportTasks: seq[ActiveTransport]
     worker: Future[void]
     running: bool
 
@@ -34,9 +43,19 @@ proc monotonicMillis*(): MonoMillis =
   ## Converts the current Chronos monotonic clock to scheduler milliseconds.
   MonoMillis(Moment.now().epochNanoSeconds div 1_000_000)
 
+func schedulerWaitChunkMs*(wakeAt, now: MonoMillis): int64 =
+  ## Returns a Duration-safe, bounded wait chunk for one scheduler poll.
+  if wakeAt <= now:
+    return 0
+  let difference = uint64(int64(wakeAt)) - uint64(int64(now))
+  if difference > uint64(MaxSchedulerWaitChunkMs):
+    MaxSchedulerWaitChunkMs
+  else:
+    int64(difference)
+
 proc failedResponse(message: string): Future[TransportResponse] =
   result = newFuture[TransportResponse]("cordnim.rest.failed")
-  result.fail(newDiscordError(TransportError, message))
+  result.fail(cordErrors.newDiscordError(cordErrors.LifecycleError, message))
 
 proc finishPending(client: ChronosRestClient, id: ScheduledRequestId,
                    response: sink TransportResponse) =
@@ -47,22 +66,24 @@ proc finishPending(client: ChronosRestClient, id: ScheduledRequestId,
       promise.complete(response)
 
 proc failPending(client: ChronosRestClient, id: ScheduledRequestId,
-                 message: string) =
+                 error: ref CatchableError) =
   if client.pending.hasKey(id):
     let promise = client.pending.getOrDefault(id)
     client.pending.del(id)
     if not promise.finished:
-      promise.fail(newDiscordError(TransportError, message))
+      promise.fail(error)
 
 proc settleRejections(client: ChronosRestClient) =
   for rejection in client.scheduler.takeRejections():
     case rejection.kind
     of rjkCancelled:
-      client.failPending(rejection.id,
-        "REST request was cancelled before dispatch")
+      client.failPending(rejection.id, cordErrors.newDiscordError(
+        cordErrors.RequestCancelledError,
+        "REST request was cancelled before dispatch"))
     of rjkDeadlineExpired:
-      client.failPending(rejection.id,
-        "REST request deadline expired before dispatch")
+      client.failPending(rejection.id, cordErrors.newDiscordError(
+        cordErrors.RequestDeadlineError,
+        "REST request deadline expired before dispatch"))
 
 func shouldRetry(response: TransportResponse,
                  request: RawRequest): bool =
@@ -85,35 +106,56 @@ proc executeOne(client: ChronosRestClient,
         client.scheduler.retry(scheduled, now):
       client.wake.fire()
       return
+    client.scheduler.settle(scheduled)
     client.finishPending(scheduled.id, response)
   except CancelledError:
     client.scheduler.complete(scheduled, RateLimitUpdate(), monotonicMillis())
-    client.failPending(scheduled.id, "REST transport task was cancelled")
+    client.scheduler.settle(scheduled)
+    client.failPending(scheduled.id, cordErrors.newDiscordError(
+      cordErrors.RequestCancelledError,
+      "REST transport task was cancelled"))
     raise
-  except CatchableError:
+  except cordErrors.TransportError:
     let now = monotonicMillis()
     client.scheduler.complete(scheduled, RateLimitUpdate(), now)
     if scheduled.request.meta.retryPolicy.retryTransportErrors and
         client.scheduler.retry(scheduled, now):
       client.wake.fire()
       return
-    # Transport exceptions may embed a token-bearing webhook URL. The public
-    # failure crosses the redaction boundary using only scheduler metadata.
-    client.failPending(scheduled.id, "REST transport failed")
+    client.scheduler.settle(scheduled)
+    client.failPending(scheduled.id, cordErrors.newDiscordError(
+      cordErrors.TransportError, "REST transport failed"))
+  except cordErrors.DiscordError as error:
+    client.scheduler.complete(
+      scheduled, RateLimitUpdate(), monotonicMillis())
+    client.scheduler.settle(scheduled)
+    # Concrete transports establish their own redaction boundary before
+    # returning a public Cordnim category. Preserve that category and metadata.
+    client.failPending(scheduled.id, error)
+  except CatchableError:
+    # Validation, encoding, body limits, and source-contract violations are
+    # deterministic local failures. Replaying them cannot repair the request.
+    client.scheduler.complete(
+      scheduled, RateLimitUpdate(), monotonicMillis())
+    client.scheduler.settle(scheduled)
+    # Application-supplied transports may expose arbitrary exception text.
+    # Preserve only the terminal local-validation category at this boundary.
+    client.failPending(scheduled.id, cordErrors.newDiscordError(
+      cordErrors.ValidationError, "REST request validation failed"))
   finally:
     client.wake.fire()
 
 proc reapTasks(client: ChronosRestClient) =
-  var active: seq[Future[void]]
+  var active: seq[ActiveTransport]
   for task in client.transportTasks:
-    if not task.finished:
+    if not task.future.finished:
       active.add task
   client.transportTasks = move active
 
 proc waitUntil(client: ChronosRestClient, wakeAt,
                now: MonoMillis): Future[void] {.
                async: (raises: [CancelledError]).} =
-  let delay = max(0'i64, wakeAt - now)
+  let delay = schedulerWaitChunkMs(wakeAt, now)
   let wakeFuture = client.wake.wait()
   let timerFuture = sleepAsync(delay.milliseconds)
   discard await one(wakeFuture, timerFuture)
@@ -130,7 +172,10 @@ proc workerLoop(client: ChronosRestClient): Future[void] {.
     case selected.kind
     of tkReady:
       let task = client.executeOne(selected.request)
-      client.transportTasks.add task
+      client.transportTasks.add ActiveTransport(
+        cancellationId: selected.request.request.meta.cancellationId,
+        future: task
+      )
     of tkWait:
       await client.waitUntil(selected.wakeAt, now)
     of tkIdle:
@@ -166,8 +211,13 @@ proc submit*(client: ChronosRestClient,
   promise
 
 proc cancel*(client: ChronosRestClient, cancellationId: uint64) =
-  ## Cancels queued requests carrying `cancellationId`.
+  ## Cancels queued and active requests carrying `cancellationId`.
   client.scheduler.cancel(cancellationId)
+  for active in client.transportTasks.mitems:
+    if active.cancellationId == some(cancellationId) and
+        not active.future.finished and not active.cancellationRequested:
+      active.cancellationRequested = true
+      active.future.cancelSoon()
   client.wake.fire()
 
 proc stop*(client: ChronosRestClient): Future[void] {.
@@ -180,13 +230,22 @@ proc stop*(client: ChronosRestClient): Future[void] {.
   if not client.worker.isNil:
     await client.worker.cancelAndWait()
   if client.transportTasks.len > 0:
-    await cancelAndWait(client.transportTasks)
+    var futures: seq[Future[void]]
+    for active in client.transportTasks:
+      futures.add active.future
+    await cancelAndWait(futures)
   var ids: seq[ScheduledRequestId]
   for id in client.pending.keys:
     ids.add id
   for id in ids:
-    client.failPending(id, "REST client stopped before request completion")
+    client.failPending(id, cordErrors.newDiscordError(
+      cordErrors.LifecycleError,
+      "REST client stopped before request completion"))
   client.transportTasks.setLen(0)
+  # Queued requests have now had their public promises failed. Drop all bucket,
+  # cancellation, and reservation state so a later `start` cannot execute an
+  # orphan whose consumer no longer exists.
+  client.scheduler = initScheduler()
 
 func queuedCount*(client: ChronosRestClient): int =
   ## Returns requests waiting for a bucket or retry deadline.
@@ -195,3 +254,7 @@ func queuedCount*(client: ChronosRestClient): int =
 func inFlightCount*(client: ChronosRestClient): int =
   ## Returns requests currently executing in independent buckets.
   client.scheduler.inFlightCount
+
+func activeCancellationGroupCount*(client: ChronosRestClient): int =
+  ## Returns live cancellation groups retained by the running scheduler.
+  client.scheduler.activeCancellationGroupCount

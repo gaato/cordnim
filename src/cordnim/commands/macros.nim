@@ -26,6 +26,7 @@ type
     spec: NimNode
 
   CommandInfo = object
+    kind: CommandKind
     name: string
     handler: NimNode
     servicesType: NimNode
@@ -33,8 +34,21 @@ type
     parameters: seq[ParameterInfo]
     asyncHandler: bool
 
+proc optionObject(invocation: CommandInvocation): JsonNode =
+  ## Returns the invocation's options as a JSON object.
+  ##
+  ## A nil node represents omitted options. A present node with another JSON
+  ## kind is malformed and must not be mistaken for an empty option set.
+  if invocation.options.isNil:
+    newJObject()
+  elif invocation.options.kind != JObject:
+    raise newException(CommandOptionDecodeError,
+      "command options must be a JSON object")
+  else:
+    invocation.options
+
 proc requiredOption(options: JsonNode, name: string): JsonNode =
-  if options.kind != JObject:
+  if options.isNil or options.kind != JObject:
     raise newException(CommandOptionDecodeError,
       "command options must be a JSON object")
   if not options.hasKey(name) or options[name].kind == JNull:
@@ -81,20 +95,16 @@ proc wireName(sourceName: string): string =
     else:
       result.add(character)
 
-proc validCommandName(name: string): bool =
-  if name.runeLen notin 1..32:
-    return false
-  for character in name.runes:
-    let value = int(character)
-    if value < 128:
-      if char(value) notin {'a'..'z', '0'..'9', '-', '_'}:
-        return false
-    elif not character.isAlpha or character.isUpper or character.isTitle:
-      return false
-  true
-
 proc isNamed(node: NimNode, name: string): bool =
   node.kind in {nnkIdent, nnkSym} and node.strVal == name
+
+proc idBasename(rendered: string): string =
+  ## Returns a type name without module qualification, so only the exact
+  ## Discord ID types match (e.g. `SuperUserId`/`MyAttachmentId` do not).
+  let dot = rendered.rfind('.')
+  if dot >= 0: rendered[dot + 1 .. ^1] else: rendered
+
+const discordIdTypeNames = ["UserId", "ChannelId", "RoleId", "AttachmentId"]
 
 proc optionValueType(typeNode: NimNode): tuple[optional: bool, value: NimNode] =
   if typeNode.kind == nnkBracketExpr and typeNode.len == 2 and
@@ -126,19 +136,26 @@ proc optionKind(typeNode: NimNode, parameter: NimNode): CommandOptionKind =
     cokBoolean
   elif rendered in ["float", "float32", "float64"]:
     cokNumber
+  elif rendered in ["uint", "uint64"]:
+    error(
+      "unsigned 64-bit option type '" & rendered &
+        "' exceeds Discord's signed safe integer range and overflows " &
+        "BiggestInt; use int/int64 or a bounded range[a..b]",
+      parameter
+    )
   elif rendered in ["int", "int8", "int16", "int32", "int64",
-                    "uint", "uint8", "uint16", "uint32"] or
+                    "uint8", "uint16", "uint32"] or
       (typeNode.kind == nnkBracketExpr and typeNode[0].isNamed("range")):
     cokInteger
   elif implementation.kind == nnkEnumTy:
     cokString
-  elif rendered.endsWith("UserId"):
+  elif idBasename(rendered) == "UserId":
     cokUser
-  elif rendered.endsWith("ChannelId"):
+  elif idBasename(rendered) == "ChannelId":
     cokChannel
-  elif rendered.endsWith("RoleId"):
+  elif idBasename(rendered) == "RoleId":
     cokRole
-  elif rendered.endsWith("Attachment"):
+  elif idBasename(rendered) == "AttachmentId":
     cokAttachment
   else:
     error(
@@ -148,10 +165,12 @@ proc optionKind(typeNode: NimNode, parameter: NimNode): CommandOptionKind =
     )
 
 proc choiceExpr(name: string): NimNode =
+  # Enum options generate string choices whose wire value is the member name.
   let choiceType = bindSym"CommandChoice"
   result = newTree(nnkObjConstr, choiceType,
+    newTree(nnkExprColonExpr, ident"kind", bindSym"ccvString"),
     newTree(nnkExprColonExpr, ident"name", newLit(name)),
-    newTree(nnkExprColonExpr, ident"value", newLit(name)))
+    newTree(nnkExprColonExpr, ident"stringValue", newLit(name)))
 
 proc optionSpecExpr(parameterName: string, typeNode: NimNode,
                     required: bool, parameter: NimNode): NimNode =
@@ -245,16 +264,29 @@ proc commandInfo(handler: NimNode): CommandInfo =
   if metadata.len < 10:
     error("invalid discordCommand metadata", handler)
 
+  let kindOrdinal = metadata[5].intVal.int
+  result.kind = CommandKind(kindOrdinal)
   result.name = metadata[1].strVal
-  if not validCommandName(result.name):
-    error(
-      "Discord command name must contain 1-32 lowercase letters, numbers, " &
-        "hyphens, or underscores",
-      handler
-    )
   let description = metadata[2].strVal
-  if description.runeLen notin 1..100:
-    error("Discord command description must contain 1-100 characters", handler)
+  case result.kind
+  of ckChatInput:
+    if not validChatInputName(result.name):
+      error(
+        "chat-input command name must use Discord's 1-32 character " &
+          "lowercase slash-command syntax",
+        handler
+      )
+    if description.runeLen notin 1..100:
+      error("chat-input command description must contain 1-100 characters",
+        handler)
+  of ckUser, ckMessage:
+    if not validContextMenuName(result.name):
+      error(
+        "context-menu command name must contain 1-32 visible characters",
+        handler
+      )
+    if description.len != 0:
+      error("user and message commands cannot declare a description", handler)
 
   let parameters = implementation[3]
   if parameters.len < 2:
@@ -281,7 +313,6 @@ proc commandInfo(handler: NimNode): CommandInfo =
     for symbolIndex in 0 ..< definition.len - 2:
       result.parameters.add(parameterInfo(definition, definition[symbolIndex]))
 
-  let kindOrdinal = metadata[5].intVal.int
   if kindOrdinal != ord(ckChatInput) and result.parameters.len > 0:
     error(
       "user and message context commands cannot declare slash options",
@@ -292,6 +323,20 @@ proc commandInfo(handler: NimNode): CommandInfo =
       "Discord chat-input commands permit at most 25 top-level options",
       handler
     )
+
+  # Discord requires every required option to precede the optional ones.
+  var sawOptional = false
+  for parameter in result.parameters:
+    let required = not parameter.isOptional and
+      parameter.defaultValue.kind == nnkEmpty
+    if required and sawOptional:
+      error(
+        "required option '" & parameter.wireName &
+          "' must be declared before optional options",
+        parameter.symbol
+      )
+    if not required:
+      sawOptional = true
 
   let installsExpr = enumSetExpr(metadata[3], bindSym"CommandInstallContext",
     ["guildInstall", "userInstall"])
@@ -333,15 +378,18 @@ proc commandInfo(handler: NimNode): CommandInfo =
 proc decodeExpr(typeNode, node, wireNameNode: NimNode): NimNode =
   let rendered = typeNode.repr
   let implementation = typeNode.getTypeImpl()
-  if rendered == "string" or rendered.endsWith("Attachment"):
+  if rendered == "string":
     let decode = bindSym"decodeString"
     result = quote do: `decode`(`node`, `wireNameNode`)
-  elif rendered.endsWith("UserId") or rendered.endsWith("ChannelId") or
-      rendered.endsWith("RoleId"):
+  elif idBasename(rendered) in discordIdTypeNames:
+    # Attachment options arrive as a snowflake; the resolved attachment object
+    # stays available in `invocation.resolved`. `typedesc[...]` is required so
+    # the spliced type binds to parseId's typedesc parameter rather than being
+    # read as a value.
     let decode = bindSym"decodeString"
     let parse = bindSym"parseId"
     result = quote do:
-      `parse`(`typeNode`, `decode`(`node`, `wireNameNode`))
+      `parse`(typedesc[`typeNode`], `decode`(`node`, `wireNameNode`))
   elif rendered == "bool":
     let decode = bindSym"decodeBoolean"
     result = quote do: `decode`(`node`, `wireNameNode`)
@@ -349,7 +397,7 @@ proc decodeExpr(typeNode, node, wireNameNode: NimNode): NimNode =
     let decode = bindSym"decodeNumber"
     result = quote do: `decode`[`typeNode`](`node`, `wireNameNode`)
   elif rendered in ["int", "int8", "int16", "int32", "int64",
-                    "uint", "uint8", "uint16", "uint32"] or
+                    "uint8", "uint16", "uint32"] or
       (typeNode.kind == nnkBracketExpr and typeNode[0].isNamed("range")):
     let decode = bindSym"decodeInteger"
     result = quote do: `decode`[`typeNode`](`node`, `wireNameNode`)
@@ -382,11 +430,20 @@ proc adapterExpr(command: CommandInfo): NimNode =
     let `commandContext` = `initContext`(
       `services`, `responseContext`, `invocation`)
 
+  let optionsSym = genSym(nskLet, "options")
+  if command.parameters.len > 0:
+    let optionObjectSym = bindSym"optionObject"
+    body.add quote do:
+      let `optionsSym` = try:
+        `optionObjectSym`(`invocation`)
+      except CatchableError as decodeError:
+        return `invalid`(decodeError.msg)
+
   var arguments = @[commandContext]
   for parameter in command.parameters:
     let local = genSym(nskLet, parameter.sourceName)
     let wireNameNode = newLit(parameter.wireName)
-    let optionsNode = newDotExpr(invocation, ident"options")
+    let optionsNode = optionsSym
     let hasKey = newCall(bindSym"hasKey", optionsNode, wireNameNode)
     let indexed = newTree(nnkBracketExpr, optionsNode, wireNameNode)
     var value: NimNode
@@ -437,8 +494,8 @@ macro commandSet*(handlers: varargs[typed]): untyped =
   ##
   ## All procedures must use `discordCommand`, share one `CommandCtx[S]`
   ## services type, and return `CommandResult` or Chronos
-  ## `Future[CommandResult]`. The resulting registry is sorted by command name,
-  ## so manifest output does not depend on registration order.
+  ## `Future[CommandResult]`. The resulting registry is sorted by command kind
+  ## and name, so manifest output does not depend on registration order.
   ## Generated adapters combine app-owned services, the ingress response
   ## capability, and middleware-normalized invocation in `CommandCtx[S]`.
   ##
@@ -448,7 +505,7 @@ macro commandSet*(handlers: varargs[typed]): untyped =
   ## names become snake-case Discord option names. A decode failure returns
   ## `crInvalidOptions` without invoking its handler.
   ##
-  ## Calling `commandSet` without handlers, duplicate command names, mixed
+  ## Calling `commandSet` without handlers, duplicate command keys, mixed
   ## services types, invalid command metadata, and unsupported parameter types
   ## are compile-time errors.
   if handlers.len == 0:
@@ -460,11 +517,13 @@ macro commandSet*(handlers: varargs[typed]): untyped =
   for handler in handlers:
     commands.add(commandInfo(handler))
   commands.sort(proc (left, right: CommandInfo): int =
-    cmp(left.name, right.name))
+    let kindOrder = cmp(ord(left.kind), ord(right.kind))
+    if kindOrder != 0: kindOrder else: cmp(left.name, right.name))
 
   for index in 1..<commands.len:
-    if commands[index - 1].name == commands[index].name:
-      error("duplicate Discord command name '" & commands[index].name & "'",
+    if commands[index - 1].kind == commands[index].kind and
+        commands[index - 1].name == commands[index].name:
+      error("duplicate Discord command key '" & commands[index].name & "'",
         commands[index].handler)
     if commands[index].servicesType.repr != commands[0].servicesType.repr:
       error("all procedures in one commandSet must use the same Services type",

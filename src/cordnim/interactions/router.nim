@@ -14,15 +14,24 @@ import cordnim/core/errors
 import cordnim/rest/chronos_driver
 import cordnim/rest/request
 import cordnim/runtime/task_scope
-import ./[context, exchange, http_server, responder, response_codec]
+import ./[context, dispatch_core, exchange, http_server, responder]
 
-const InitialResponseSendMarginMs = 250'i64
-  # Reserve time for JSON serialization and the HTTP or Gateway write after the
-  # router selects an initial response.
+export dispatch_core.SelectedResponse, dispatch_core.InteractionClass,
+  dispatch_core.classify
+
+# The initial-response send margin and correlation-ID extraction are shared with
+# every other interaction router through `dispatch_core`.
 
 type
   InteractionDecodeError* = object of CatchableError ## Raised when a verified
     ## payload lacks required command fields.
+
+  CommandApplicationError* = object of CatchableError ## Stable, redacted failure
+    ## of a command handler or middleware before acknowledgement. Its message is
+    ## fixed so no handler or middleware detail crosses the dispatch boundary.
+
+  CommandRouterClosedError* = object of CatchableError ## A route, selection, or
+    ## adapter call was attempted after the router began closing.
 
   DeferredCompletionSink* = proc(interaction: JsonNode,
                                   result: CommandResult): Future[void]
@@ -48,11 +57,14 @@ type
     {.gcsafe, raises: [].} ## Sends an edit or follow-up after acknowledgement.
 
   CommandRouter*[S] = ref object ## Shared typed command router and task owner.
+    ## One Chronos event-loop owner serializes selection, routing, and close.
     app: DiscordApp[S]
     tasks: TaskScope
     completionSink: DeferredCompletionSink
     failureObserver: DeferredFailureObserver
     postAckSink: PostAckResponseSink
+    closed: bool
+    closeTask: Future[void].Raising([])
 
 proc responseData(commandResult: CommandResult): JsonNode =
   if commandResult.payload.isNil:
@@ -85,16 +97,68 @@ func editOriginalPayload*(commandResult: CommandResult): JsonNode =
 
 func commandOptions(data: JsonNode): JsonNode =
   result = newJObject()
-  if not data.hasKey("options") or data["options"].kind != JArray:
+  if not data.hasKey("options"):
     return
+  if data["options"].kind != JArray:
+    raise newException(InteractionDecodeError,
+      "interaction command options must be an array")
   for option in data["options"]:
-    if option.kind == JObject and option.hasKey("name"):
-      if option.hasKey("value"):
-        result[option["name"].getStr()] = option["value"]
-      elif option.hasKey("options"):
-        # Subcommand trees stay under their name until the command DSL grows an
-        # explicit nested-group type; silently flattening is ambiguous.
-        result[option["name"].getStr()] = option["options"]
+    if option.kind != JObject or not option.hasKey("name") or
+        option["name"].kind != JString:
+      raise newException(InteractionDecodeError,
+        "interaction command option is malformed")
+    let hasValue = option.hasKey("value")
+    let hasChildren = option.hasKey("options")
+    if hasValue == hasChildren:
+      raise newException(InteractionDecodeError,
+        "interaction command option must contain value or options")
+    let name = option["name"].getStr()
+    if result.hasKey(name):
+      raise newException(InteractionDecodeError,
+        "interaction command option name is duplicated")
+    if hasValue:
+      result[name] = option["value"]
+    else:
+      if option["options"].kind != JArray:
+        raise newException(InteractionDecodeError,
+          "nested interaction command options must be an array")
+      # Subcommand trees stay under their name until the command DSL grows an
+      # explicit nested-group type; silently flattening is ambiguous.
+      result[name] = option["options"]
+
+proc commandKind(data: JsonNode): CommandKind =
+  if not data.hasKey("type") or data["type"].kind != JInt:
+    raise newException(InteractionDecodeError,
+      "interaction command type is missing")
+  case data["type"].getInt()
+  of 1: ckChatInput
+  of 2: ckUser
+  of 3: ckMessage
+  else:
+    raise newException(InteractionDecodeError,
+      "interaction command type is unsupported")
+
+func supportsInstall(spec: CommandSpec, context: InvocationContext): bool =
+  for owner in context.integrationOwners:
+    case owner.kind
+    of iiGuildInstall:
+      if guildInstall in spec.installs:
+        return true
+    of iiUserInstall:
+      if userInstall in spec.installs:
+        return true
+
+func supportsSurface(spec: CommandSpec, context: InvocationContext): bool =
+  case context.surface
+  of isGuildChannel:
+    guildChannel in spec.contexts
+  of isBotDm:
+    botDm in spec.contexts
+  of isPrivateChannel:
+    privateChannel in spec.contexts
+
+func availableIn(spec: CommandSpec, context: InvocationContext): bool =
+  spec.supportsInstall(context) and spec.supportsSurface(context)
 
 proc invokingUserId(interaction: JsonNode): UserId =
   var userIdText = ""
@@ -186,7 +250,11 @@ proc invocationContext*(interaction: JsonNode): InvocationContext =
 
 proc commandInvocation*(interaction: JsonNode): CommandInvocation =
   ## Decodes a Discord application-command interaction into typed IDs/options.
-  if interaction.kind != JObject or not interaction.hasKey("data") or
+  if interaction.kind != JObject or not interaction.hasKey("type") or
+      interaction["type"].kind != JInt or interaction["type"].getInt() != 2:
+    raise newException(InteractionDecodeError,
+      "interaction is not an application command")
+  if not interaction.hasKey("data") or
       interaction["data"].kind != JObject:
     raise newException(InteractionDecodeError,
       "interaction command data is missing")
@@ -195,8 +263,10 @@ proc commandInvocation*(interaction: JsonNode): CommandInvocation =
     raise newException(InteractionDecodeError,
       "interaction command name is missing")
 
+  let kind = data.commandKind()
   let context = interaction.invocationContext()
   result = CommandInvocation(
+    kind: kind,
     name: data["name"].getStr(),
     options: data.commandOptions(),
     userId: context.invokingUserId,
@@ -204,29 +274,33 @@ proc commandInvocation*(interaction: JsonNode): CommandInvocation =
     context: context,
     resolved: if data.hasKey("resolved"): data["resolved"] else: newJObject()
   )
-  if data.hasKey("target_id"):
+  result.withInteractionLocales(interaction)
+  case kind
+  of ckChatInput:
+    if data.hasKey("target_id"):
+      raise newException(InteractionDecodeError,
+        "chat-input command cannot contain target_id")
+  of ckUser, ckMessage:
+    if not data.hasKey("target_id"):
+      raise newException(InteractionDecodeError,
+        "context-menu command target ID is missing")
     if data["target_id"].kind != JString:
       raise newException(InteractionDecodeError,
         "context command target ID must be a string")
     let targetId = data["target_id"].getStr()
-    let commandType = if data.hasKey("type") and data["type"].kind == JInt:
-      data["type"].getInt()
-    else:
-      1
-    case commandType
-    of 2:
+    case kind
+    of ckUser:
       result.target = some(CommandTarget(
         kind: ctkUser,
         targetUserId: parseId(UserId, targetId)
       ))
-    of 3:
+    of ckMessage:
       result.target = some(CommandTarget(
         kind: ctkMessage,
         targetMessageId: parseId(MessageId, targetId)
       ))
-    else:
-      raise newException(InteractionDecodeError,
-        "chat-input command cannot contain target_id")
+    of ckChatInput:
+      discard
 
 proc newCommandRouter*[S](app: DiscordApp[S],
                           completionSink: DeferredCompletionSink = nil,
@@ -243,17 +317,6 @@ proc newCommandRouter*[S](app: DiscordApp[S],
     failureObserver: failureObserver,
     postAckSink: postAckSink
   )
-
-proc observedInteractionId(interaction: JsonNode): Option[InteractionId] =
-  if interaction.kind != JObject:
-    return none(InteractionId)
-  let idNode = interaction{"id"}
-  if idNode.isNil or idNode.kind != JString:
-    return none(InteractionId)
-  try:
-    some(parseId(InteractionId, idNode.getStr()))
-  except ValueError:
-    none(InteractionId)
 
 proc reportDeferredFailure[S](router: CommandRouter[S], interaction: JsonNode,
                               kind: DeferredFailureKind) =
@@ -305,10 +368,6 @@ func safeInitialDelay(responder: InteractionResponder,
   max(0'i64,
     responder.remainingAckMs(now) - InitialResponseSendMarginMs)
 
-type SelectedInitialResponse = object
-  body: JsonNode
-  exchange: InteractionExchange
-
 proc selectCommandResult(exchange: InteractionExchange,
                          commandResult: CommandResult) =
   exchange.selectInitial(ContextResponse(
@@ -319,22 +378,49 @@ proc selectCommandResult(exchange: InteractionExchange,
       else:
         vPublic),
     body: commandResult.responseData()
-  ), irkMessage)
+  ))
 
-proc selectedResponse(exchange: InteractionExchange):
-                      SelectedInitialResponse =
-  let response = exchange.initialResponse.read()
-  SelectedInitialResponse(
-    body: response.initialResponseJson(),
-    exchange: exchange
-  )
+proc selectedResponse(exchange: InteractionExchange): SelectedResponse =
+  exchange.selectedFromExchange()
 
-proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
-                       receivedAt: MonoMillis):
-                       Future[SelectedInitialResponse] {.async.} =
-  ## Selects an ACK body; the ingress transport confirms delivery separately.
+proc ensureOpen[S](router: CommandRouter[S]) =
   if router.isNil or router.app.isNil:
     raise newException(ValueError, "command router is not initialized")
+  if router.closed:
+    raise newException(CommandRouterClosedError, "command router is closed")
+
+proc commandResultOrRedact[S](router: CommandRouter[S], interaction: JsonNode,
+                              commandFuture: Future[CommandResult]):
+                              CommandResult =
+  ## Reads a finished command future's result, redacting a pre-acknowledgement
+  ## handler or middleware failure.
+  ##
+  ## A successful result (including a deliberate rejection) is returned as-is. A
+  ## failure is translated to a fixed `CommandApplicationError` and reported once
+  ## to the failure observer with the handler phase, so no handler or middleware
+  ## exception message crosses the dispatch boundary. `CancelledError` is
+  ## preserved. The post-selection retained tails observe their own failures, so
+  ## this path never reports twice.
+  try:
+    result = commandFuture.read()
+  except CancelledError:
+    raise
+  except CatchableError:
+    router.reportDeferredFailure(interaction, dfkHandler)
+    raise newException(CommandApplicationError,
+      "command application failed before acknowledgement")
+
+proc selectResponse*[S](router: CommandRouter[S], interaction: JsonNode,
+                        receivedAt: MonoMillis):
+                        Future[SelectedResponse] {.async.} =
+  ## Selects one ACK body for a command; delivery is confirmed by the adapter.
+  ##
+  ## The unified `InteractionDispatcher` calls this after classifying an
+  ## application command, so HTTP and Gateway ingress share the exact selection,
+  ## auto-defer, and retention logic. A handler or middleware failure before the
+  ## interaction is acknowledged surfaces only as a redacted
+  ## `CommandApplicationError`.
+  router.ensureOpen()
 
   let invocation = interaction.commandInvocation()
   let responder = newInteractionResponder(receivedAt)
@@ -354,24 +440,37 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
     invocation.context.followupBudget,
     sendPostAck
   )
-  let commandIndex = router.app.commands.find(invocation.name)
+  let commandIndex = router.app.commands.find(invocation.key)
   if commandIndex < 0:
     if responder.remainingAckMs(monotonicMillis()) <=
         InitialResponseSendMarginMs:
       raise newDiscordError(InteractionExpiredError,
         "interaction not-found response send budget was exhausted")
-    exchange.selectCommandResult(notFound(invocation.name))
+    exchange.selectCommandResult(notFound(invocation.key))
     return exchange.selectedResponse()
 
   let spec = router.app.commands.specs[commandIndex]
+  if not spec.availableIn(invocation.context):
+    if responder.remainingAckMs(monotonicMillis()) <=
+        InitialResponseSendMarginMs:
+      raise newDiscordError(InteractionExpiredError,
+        "interaction rejection response send budget was exhausted")
+    exchange.selectCommandResult(rejected(
+      "command is unavailable in this installation or interaction context"))
+    return exchange.selectedResponse()
+
   let context = appcontext.newContext(exchange)
   let commandFuture = router.app.dispatch(context, invocation)
+  let selection = exchange.waitInitialSelection()
   var commandRetained = false
   var timer: Future[void]
 
   template retainExplicitHandler() =
-    discard router.tasks.spawn(
-      router.observeBackground(interaction, commandFuture))
+    if router.tasks.isClosed:
+      await commandFuture.cancelAndWait()
+    else:
+      discard router.tasks.spawn(
+        router.observeBackground(interaction, commandFuture))
     commandRetained = true
 
   try:
@@ -379,10 +478,10 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
       timer = sleepAsync(
         responder.safeInitialDelay(monotonicMillis()).milliseconds)
       discard await race(
-        FutureBase(commandFuture), FutureBase(exchange.initialResponse),
+        FutureBase(commandFuture), FutureBase(selection),
         FutureBase(timer))
 
-      if exchange.initialResponse.finished:
+      if exchange.initialResponseReady:
         let selected = exchange.selectedResponse()
         retainExplicitHandler()
         return selected
@@ -390,8 +489,9 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
       if commandFuture.finished and
           responder.remainingAckMs(monotonicMillis()) >
             InitialResponseSendMarginMs:
-        let commandResult = commandFuture.read()
-        if exchange.initialResponse.finished:
+        let commandResult = router.commandResultOrRedact(
+        interaction, commandFuture)
+        if exchange.initialResponseReady:
           let selected = exchange.selectedResponse()
           retainExplicitHandler()
           return selected
@@ -405,18 +505,19 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
       responder.safeInitialDelay(monotonicMillis()))
     timer = sleepAsync(timerDelay.milliseconds)
     discard await race(
-      FutureBase(commandFuture), FutureBase(exchange.initialResponse),
+      FutureBase(commandFuture), FutureBase(selection),
       FutureBase(timer))
 
-    if exchange.initialResponse.finished:
+    if exchange.initialResponseReady:
       let selected = exchange.selectedResponse()
       retainExplicitHandler()
       return selected
 
     let remaining = responder.remainingAckMs(monotonicMillis())
     if commandFuture.finished and remaining > InitialResponseSendMarginMs:
-      let commandResult = commandFuture.read()
-      if exchange.initialResponse.finished:
+      let commandResult = router.commandResultOrRedact(
+        interaction, commandFuture)
+      if exchange.initialResponseReady:
         let selected = exchange.selectedResponse()
         retainExplicitHandler()
         return selected
@@ -433,19 +534,22 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
         visibility: exchange.effectiveVisibility(
           if spec.ephemeral: vEphemeral else: vPublic),
         body: newJNull()
-      ), irkDeferredMessage)
+      ))
     except InteractionExchangeError:
       # Handler and timer can become runnable in the same event-loop turn. The
       # exchange's atomic responder decides which one selected the ACK.
-      if exchange.initialResponse.finished:
+      if exchange.initialResponseReady:
         let selected = exchange.selectedResponse()
         retainExplicitHandler()
         return selected
       raise
 
     let selected = exchange.selectedResponse()
-    discard router.tasks.spawn(
-      router.completeDeferred(interaction, exchange, commandFuture))
+    if router.tasks.isClosed:
+      await commandFuture.cancelAndWait()
+    else:
+      discard router.tasks.spawn(
+        router.completeDeferred(interaction, exchange, commandFuture))
     commandRetained = true
     return selected
   finally:
@@ -454,6 +558,7 @@ proc selectResponse[S](router: CommandRouter[S], interaction: JsonNode,
     # it and the acknowledgement timer on every return, exception, and cancel.
     if not timer.isNil:
       await timer.cancelAndWait()
+    await selection.cancelAndWait()
     if not commandRetained:
       await commandFuture.cancelAndWait()
 
@@ -464,7 +569,7 @@ proc route*[S](router: CommandRouter[S], interaction: JsonNode,
   ## Real HTTP ingress uses `asHttpHandler`, which confirms only after the
   ## Chronos socket write succeeds.
   let selected = await router.selectResponse(interaction, receivedAt)
-  selected.exchange.confirmInitialDelivery()
+  selected.delivery.confirmInitialDelivery()
   return selected.body
 
 proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
@@ -476,6 +581,7 @@ proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
   result = proc(body: seq[byte], receivedAt: MonoMillis):
       Future[InteractionHttpResponse] {.gcsafe, raises: [].} =
     proc dispatch(): Future[InteractionHttpResponse] {.async.} =
+      router.ensureOpen()
       var bodyText = newString(body.len)
       for index, value in body:
         bodyText[index] = char(value)
@@ -497,11 +603,11 @@ proc asHttpHandler*[S](router: CommandRouter[S]): InteractionHttpHandler =
       for index, value in serialized:
         bytes[index] = byte(ord(value))
 
-      let exchange = selected.exchange
+      let delivery = selected.delivery
       proc confirmDelivery() {.closure, gcsafe, raises: [].} =
-        exchange.confirmInitialDelivery()
+        delivery.confirmInitialDelivery()
       proc markDeliveryUnknown() {.closure, gcsafe, raises: [].} =
-        exchange.markInitialDeliveryUnknown()
+        delivery.markInitialDeliveryUnknown()
       return jsonInteractionResponse(
         bytes,
         deliveryConfirmed = confirmDelivery,
@@ -522,16 +628,26 @@ proc routeGateway*[S](router: CommandRouter[S], interaction: JsonNode,
   let selected = await router.selectResponse(interaction, receivedAt)
   try:
     await sender(selected.body)
-    selected.exchange.confirmInitialDelivery()
+    selected.delivery.confirmInitialDelivery()
   except CancelledError:
-    selected.exchange.markInitialDeliveryUnknown()
+    selected.delivery.markInitialDeliveryUnknown()
     raise
   except CatchableError:
-    selected.exchange.markInitialDeliveryUnknown()
+    selected.delivery.markInitialDeliveryUnknown()
     raise
 
 proc close*[S](router: CommandRouter[S]): Future[void] {.
                async: (raises: []).} =
-  ## Cancels and joins deferred command completions.
-  if not router.isNil:
-    await router.tasks.cancelAndJoin()
+  ## Cancels and joins deferred command completions. Idempotent and join-safe.
+  ##
+  ## The router is sealed before the first await, so concurrent or repeated
+  ## `close` calls share one shutdown and observe the same result, and any later
+  ## `selectResponse`, `route`, `routeGateway`, or HTTP-handler call is rejected
+  ## with `CommandRouterClosedError` instead of dispatching into a closing scope.
+  if router.isNil:
+    return
+  if not router.closed:
+    router.closed = true
+    router.closeTask = router.tasks.cancelAndJoin()
+  if not router.closeTask.isNil:
+    await router.closeTask

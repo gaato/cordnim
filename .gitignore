@@ -3,7 +3,10 @@ nimblecache/
 htmldocs/
 build/
 /cordnim
-/tests/test_all
+/tests/tcache_resolver
+/tests/tcollectors
+/tests/tobservability
+/tools/__pycache__/
 /tools/schema_codegen
 deps/*
 !deps/atlas.config

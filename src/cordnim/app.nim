@@ -65,7 +65,7 @@ type
     {.closure, gcsafe, raises: [CatchableError].}
     ## Stops and joins every transport owned by an application runtime.
 
-  AppLifecycle* = object ## Complete transport lifecycle bound to an app.
+  AppLifecycle* = object ## Complete runtime-component lifecycle bound to an app.
     startHook: AppLifecycleStart
     waitHook: AppLifecycleWait
     closeHook: AppLifecycleClose
@@ -111,12 +111,12 @@ type
     configValue: AppConfig
     commandSetValue: CommandSet[S]
     middleware: seq[CommandMiddleware[S]]
-    lifecycleValue: AppLifecycle
-    lifecycleConfigured: bool
+    lifecycleValues: seq[AppLifecycle]
     stateValue: AppLifecycleState
     startTask: Future[void]
     waitTask: Future[void]
     closeTask: Future[void]
+    componentWaitTasks: seq[Future[void]]
 
 func gatewaySubscriptions*(intents: set[GatewayIntent] = {}):
     GatewaySubscriptions =
@@ -180,9 +180,10 @@ proc initAppLifecycle*(start: AppLifecycleStart, wait: AppLifecycleWait,
   ## Gateway connection, or a composite that owns all three. `run` calls them
   ## in start/wait/close order and guarantees `close` after a successful start.
   ##
-  ## `close` must be idempotent. A failed or cancelled close attempt leaves the
-  ## application in `alsClosing`, and a later `close` call invokes the hook
-  ## again so partially released resources can finish cleanup.
+  ## The close hook must be safe and idempotent before start, after a partial
+  ## start, and after a prior close failure. Startup failure closes every attached
+  ## component in reverse order, including components whose start hook never ran.
+  ## Each hook must therefore release only the resources it acquired.
   if start.isNil:
     raise newException(ValueError, "application start operation is required")
   if wait.isNil:
@@ -207,18 +208,32 @@ proc newDiscordApp*[S](services: sink S, config: AppConfig,
                        commands: sink CommandSet[S],
                        lifecycle = AppLifecycle()): DiscordApp[S] =
   ## Creates an application runtime with an explicit command registry.
+  ##
+  ## A complete optional lifecycle becomes the first owned runtime component.
+  ## Additional HTTP, Gateway, or operator components may be attached while the
+  ## app is ready. They start in attachment order and close in reverse order.
   new result
   new result.serviceValue
   result.serviceValue[] = services
   result.configValue = config
   result.commandSetValue = commands
-  result.lifecycleValue = lifecycle
-  result.lifecycleConfigured = lifecycle.lifecycleComplete
+  if lifecycle.lifecycleComplete:
+    result.lifecycleValues.add lifecycle
   result.stateValue = alsReady
 
 func services*[S](app: DiscordApp[S]): lent S =
   ## Borrows the application dependency container.
   app.serviceValue[]
+
+func serviceRef*[S](app: DiscordApp[S]): ref S =
+  ## Returns the app-owned service allocation by reference.
+  ##
+  ## Interaction routers store this reference so component, modal, and command
+  ## handlers observe the same services the application owns. They must never
+  ## copy an arbitrary service container into an interaction context.
+  if app.isNil:
+    raise newException(ValueError, "cannot borrow services from a nil DiscordApp")
+  app.serviceValue
 
 func config*[S](app: DiscordApp[S]): AppConfig =
   ## Returns the application's immutable transport configuration.
@@ -229,19 +244,25 @@ func commands*[S](app: DiscordApp[S]): lent CommandSet[S] =
   app.commandSetValue
 
 func hasLifecycle*[S](app: DiscordApp[S]): bool =
-  ## Reports whether transport lifecycle operations were supplied.
-  not app.isNil and app.lifecycleConfigured
+  ## Reports whether at least one runtime component is attached.
+  not app.isNil and app.lifecycleValues.len > 0
+
+func runtimeCount*[S](app: DiscordApp[S]): int =
+  ## Returns the number of runtime components owned by the application.
+  if app.isNil: 0 else: app.lifecycleValues.len
 
 func lifecycleState*[S](app: DiscordApp[S]): AppLifecycleState =
   ## Returns the current high-level application lifecycle state.
   if app.isNil: alsClosed else: app.stateValue
 
 proc configureLifecycle*[S](app: DiscordApp[S], lifecycle: AppLifecycle) =
-  ## Attaches caller-constructed transports once before application startup.
+  ## Attaches one caller-constructed runtime component before application start.
   ##
-  ## Runtime factories use this after their callbacks can safely capture the
-  ## constructed app. Lifecycle replacement after configuration or startup is
-  ## rejected so transport ownership cannot change underneath dispatch.
+  ## Runtime factories use this after their callbacks can safely capture their
+  ## constructed owner. Multiple components are allowed so an HTTP interaction
+  ## server and an independent Gateway event runtime can form one hybrid app.
+  ## Components start in attachment order and close in reverse order. Attachment
+  ## after startup is rejected so ownership cannot change underneath dispatch.
   if app.isNil:
     raise newException(AppLifecycleError,
       "cannot configure a nil DiscordApp")
@@ -251,11 +272,7 @@ proc configureLifecycle*[S](app: DiscordApp[S], lifecycle: AppLifecycle) =
   if app.stateValue != alsReady:
     raise newException(AppLifecycleError,
       "application lifecycle can only be configured while ready")
-  if app.lifecycleConfigured:
-    raise newException(AppLifecycleError,
-      "application transport lifecycle is already configured")
-  app.lifecycleValue = lifecycle
-  app.lifecycleConfigured = true
+  app.lifecycleValues.add lifecycle
 
 proc use*[S](app: DiscordApp[S], middleware: sink CommandMiddleware[S]) =
   ## Appends middleware in outer-to-inner execution order.
@@ -277,9 +294,22 @@ proc dispatchCore[S](app: DiscordApp[S],
   var mutableInvocation = invocation
   var entered = 0
   var stopped = false
+  var primaryError: ref CatchableError
+
+  # A middleware is `entered` only once its `before` completes, so a failing
+  # `before` neither counts itself nor runs its own `after`. The first failure
+  # from any phase becomes the primary result the caller observes.
   for middleware in app.middleware:
     if middleware.before != nil:
-      let decision = middleware.before(app.serviceValue, mutableInvocation)
+      var decision: MiddlewareDecision
+      try:
+        decision = middleware.before(app.serviceValue, mutableInvocation)
+      except CancelledError as error:
+        primaryError = error
+        break
+      except CatchableError as error:
+        primaryError = error
+        break
       inc entered
       if decision.kind == mdStop:
         result = decision.result
@@ -288,17 +318,31 @@ proc dispatchCore[S](app: DiscordApp[S],
     else:
       inc entered
 
-  if not stopped:
-    result = await commandspec.dispatchWithServices(app.commandSetValue,
-      app.serviceValue, responseContext, mutableInvocation)
+  if primaryError.isNil and not stopped:
+    try:
+      result = await commandspec.dispatchWithServices(app.commandSetValue,
+        app.serviceValue, responseContext, mutableInvocation)
+    except CancelledError as error:
+      primaryError = error
+    except CatchableError as error:
+      primaryError = error
 
-  # Unwind only middleware whose pre-hook was entered. Reverse order mirrors
-  # resource-scoped middleware while keeping control flow explicit.
-  if entered > 0:
-    for index in countdown(entered - 1, 0):
-      let after = app.middleware[index].after
-      if after != nil:
+  # Always unwind every entered middleware's `after` in reverse order, running
+  # them all to completion so resource-scoped middleware tears down even when the
+  # handler or an inner `after` failed. On handler failure the afters observe a
+  # default result. The primary error is preserved and re-raised afterward.
+  for index in countdown(entered - 1, 0):
+    let after = app.middleware[index].after
+    if after != nil:
+      try:
         after(app.serviceValue, mutableInvocation, result)
+      except CancelledError as error:
+        if primaryError.isNil: primaryError = error
+      except CatchableError as error:
+        if primaryError.isNil: primaryError = error
+
+  if not primaryError.isNil:
+    raise primaryError
 
 proc dispatch*[S](app: DiscordApp[S],
                   context: appcontext.Context,
@@ -336,7 +380,20 @@ proc closeConfigured[S](app: DiscordApp[S], joinStart: bool): Future[void] {.
     await cancelAndWait(app.startTask)
   if not app.waitTask.isNil and not app.waitTask.finished:
     await cancelAndWait(app.waitTask)
-  await app.lifecycleValue.closeHook()
+  if app.componentWaitTasks.len > 0:
+    await cancelAndWait(app.componentWaitTasks)
+    app.componentWaitTasks.setLen(0)
+
+  var firstError: ref CatchableError
+  if app.lifecycleValues.len > 0:
+    for index in countdown(app.lifecycleValues.len - 1, 0):
+      try:
+        await app.lifecycleValues[index].closeHook()
+      except CatchableError as error:
+        if firstError.isNil:
+          firstError = error
+  if not firstError.isNil:
+    raise firstError
   app.stateValue = alsClosed
 
 proc beginClose[S](app: DiscordApp[S], joinStart: bool): Future[void] =
@@ -348,7 +405,8 @@ proc beginClose[S](app: DiscordApp[S], joinStart: bool): Future[void] =
 
 proc startConfigured[S](app: DiscordApp[S]): Future[void] {.async.} =
   try:
-    await app.lifecycleValue.startHook()
+    for lifecycle in app.lifecycleValues:
+      await lifecycle.startHook()
   except CatchableError as startError:
     # `close` owns cleanup when it requested this cancellation. Waiting for
     # that task here would deadlock because it first joins this start task.
@@ -376,7 +434,7 @@ proc start*[S](app: DiscordApp[S]): Future[void] {.raises: [].} =
   ## the same result.
   if app.isNil:
     return failedLifecycleOperation("cannot start a nil DiscordApp")
-  if not app.lifecycleConfigured:
+  if app.lifecycleValues.len == 0:
     return failedLifecycleOperation(
       "application transport lifecycle is not configured")
   case app.stateValue
@@ -393,7 +451,30 @@ proc start*[S](app: DiscordApp[S]): Future[void] {.raises: [].} =
       "a closing or closed application cannot be started")
 
 proc waitConfigured[S](app: DiscordApp[S]): Future[void] {.async.} =
-  await app.lifecycleValue.waitHook()
+  app.componentWaitTasks.setLen(0)
+  for lifecycle in app.lifecycleValues:
+    app.componentWaitTasks.add lifecycle.waitHook()
+  if app.componentWaitTasks.len == 1:
+    await app.componentWaitTasks[0]
+    return
+
+  discard await one(app.componentWaitTasks)
+  # Several component waits can finish on the same event-loop turn. `one` reports
+  # only one of them, so a concurrent failure would be lost if a concurrent
+  # success were reported instead. Observe every already-finished wait and
+  # surface the first failure in attachment order. Still-running losers stay
+  # owned by the app and are cancelled and joined by close.
+  var primaryError: ref CatchableError
+  for task in app.componentWaitTasks:
+    if task.finished:
+      try:
+        await task
+      except CancelledError as error:
+        if primaryError.isNil: primaryError = error
+      except CatchableError as error:
+        if primaryError.isNil: primaryError = error
+  if not primaryError.isNil:
+    raise primaryError
 
 proc waitOnce[S](app: DiscordApp[S]): Future[void] =
   if app.waitTask.isNil:
@@ -410,7 +491,7 @@ proc close*[S](app: DiscordApp[S]): Future[void] =
     return completedLifecycleOperation()
   if not app.closeTask.isNil and not app.closeTask.finished:
     return app.closeTask
-  if not app.lifecycleConfigured:
+  if app.lifecycleValues.len == 0:
     app.stateValue = alsClosed
     return completedLifecycleOperation()
 
@@ -420,8 +501,38 @@ proc run*[S](app: DiscordApp[S]): Future[void] {.async.} =
   ## Starts transports, waits once for termination, and always closes resources.
   ##
   ## Concurrent calls share the application-owned start, wait, and close tasks.
+  ## The wait or transport error is primary: resources are always closed, but a
+  ## close failure never overwrites it. When no primary error exists, the close
+  ## failure is surfaced in its place.
   await app.start()
+
+  var primaryError: ref CatchableError
   try:
     await app.waitOnce()
-  finally:
+  except CancelledError as error:
+    primaryError = error
+  except CatchableError as error:
+    primaryError = error
+
+  try:
     await noCancel(app.close())
+  except CancelledError as error:
+    if primaryError.isNil: primaryError = error
+  except CatchableError as error:
+    if primaryError.isNil: primaryError = error
+
+  if not primaryError.isNil:
+    raise primaryError
+
+runnableExamples:
+  import cordnim/commands
+
+  type Services = object
+    environment: string
+
+  let application = newDiscordApp(
+    Services(environment: "test"),
+    initAppConfig(ingressHttp),
+    initCommandSet[Services](),
+  )
+  doAssert application.lifecycleState == alsReady

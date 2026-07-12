@@ -13,6 +13,11 @@ type
   LargeKind {.pure.} = enum
     AboveByte = 300
 
+const deliveryNames = [
+  ("immediate", DeliveryKind.Immediate),
+  ("deferred", DeliveryKind.Deferred),
+]
+
 block knownAndUnknownValues:
   let known = initOpenEnum[DeliveryKind](4'i32)
   let unknown = initOpenEnum[DeliveryKind](3'i32)
@@ -42,6 +47,28 @@ block nonIntegerRawRoundTrip:
   let value = initOpenEnum[DeliveryKind]("future")
   doAssert value.toRaw == "future"
   doAssert $value == "future"
+
+block explicitStringMapping:
+  let known = initOpenEnum[DeliveryKind]("deferred")
+  let unknown = initOpenEnum[DeliveryKind]("future")
+
+  doAssert known.knownValue(deliveryNames) == some(DeliveryKind.Deferred)
+  doAssert known.isKnown(deliveryNames)
+  doAssert known.requireKnown(deliveryNames) == DeliveryKind.Deferred
+  doAssert unknown.knownValue(deliveryNames).isNone
+  doAssert not unknown.isKnown(deliveryNames)
+  doAssert unknown.raw == "future"
+
+  let encoded = toOpenEnum(DeliveryKind.Immediate, deliveryNames)
+  doAssert encoded.raw == "immediate"
+
+  doAssertRaises ValueError:
+    discard unknown.requireKnown(deliveryNames)
+  doAssertRaises ValueError:
+    discard toOpenEnum(
+      DeliveryKind.Deferred,
+      [("immediate", DeliveryKind.Immediate)],
+    )
 
 block equalityAndHash:
   let first = initOpenEnum[DeliveryKind](99'i16)

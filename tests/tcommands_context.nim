@@ -1,6 +1,6 @@
 ## Response-capable generated command adapter tests.
 
-import std/[assertions, json]
+import std/[assertions, json, options]
 
 import chronos
 
@@ -26,10 +26,8 @@ proc respond(context: CommandCtx[CommandServices], action: string):
   of "defer":
     await context.deferReply(visibility = vEphemeral)
     await context.editOriginal(%*{"content": "deferred"})
-  of "update":
-    await context.updateMessage(%*{"content": "updated"})
   of "modal":
-    await context.showModal(%*{
+    await context.showRawModal(%*{
       "custom_id": "example",
       "title": "Example",
       "components": []
@@ -107,12 +105,7 @@ block app_dispatch_uses_the_apps_authoritative_services:
   doAssert execution.responses[0].action == raReply
   doAssert execution.responses[0].body == %*{"content": "stored:reply"}
 
-block command_context_forwards_component_and_modal_responses:
-  let update = exercise("update", ikMessageComponent)
-  doAssert update.state == irResponded
-  doAssert update.responses.len == 1
-  doAssert update.responses[0].action == raUpdateMessage
-
+block command_context_forwards_modal_responses:
   let modal = exercise("modal", ikApplicationCommand)
   doAssert modal.state == irResponded
   doAssert modal.responses.len == 1
@@ -124,3 +117,33 @@ block result_only_dispatch_rejects_response_io:
       CommandServices(prefix: "result-only:"),
       commandInvocation("reply")
     )
+
+block interaction_locales_decode_without_conflating_the_two:
+  let interaction = %*{
+    "type": 2, "locale": "ja", "guild_locale": "en-US",
+    "member": {"user": {"id": "42"}},
+    "data": {"name": "respond", "type": 1}
+  }
+  let locales = decodeInteractionLocales(interaction)
+  doAssert locales.locale == some(dlJapanese)
+  doAssert locales.guildLocale == some(dlEnglishUs)
+
+  var invocation = commandInvocation("reply")
+  invocation.withInteractionLocales(interaction)
+  doAssert invocation.locale == some(dlJapanese)
+  doAssert invocation.guildLocale == some(dlEnglishUs)
+
+block command_context_exposes_locale_accessors:
+  var invocation = commandInvocation("reply")
+  invocation.locale = some(dlJapanese)
+  invocation.guildLocale = some(dlEnglishUs)
+  var services: ref CommandServices
+  new(services)
+  let context = initCommandCtx(services, nil, invocation)
+  doAssert context.locale == some(dlJapanese)
+  doAssert context.guildLocale == some(dlEnglishUs)
+
+block unknown_or_absent_interaction_locales_decode_to_none:
+  let locales = decodeInteractionLocales(%*{"type": 2, "locale": "xx"})
+  doAssert locales.locale.isNone
+  doAssert locales.guildLocale.isNone

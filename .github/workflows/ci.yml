@@ -78,7 +78,8 @@ jobs:
           tests/tinteraction_sodium.nim
 
       - name: Check optional Voice package without libdave
-        run: nim check --mm:orc --path:voice/src voice/src/cordnim_voice.nim
+        working-directory: voice
+        run: nimble apiCheck -y
 
   schema:
     name: Generated schema is current
@@ -114,10 +115,8 @@ jobs:
               raise SystemExit("nim.cfg differs from atlas.lock; run atlas pin")
           PY
 
-      - name: Compare generated raw API with pinned schema
-        run: >-
-          nim c -r --mm:orc --path:src --nimcache:build/schema-nimcache
-          --out:build/schema_codegen tools/schema_codegen.nim -- --check
+      - name: Compare generated protocol sources with pinned inputs
+        run: nimble schemaCheck -y
 
   docs:
     name: API documentation
@@ -144,19 +143,60 @@ jobs:
         run: nimble docs -y
 
       - name: Generate optional Voice API documentation
-        run: >-
-          nim doc --project --mm:orc --path:voice/src
-          --outdir:htmldocs/voice voice/src/cordnim_voice.nim
+        working-directory: voice
+        run: nimble docs -y
 
-      - name: Require generated HTML
+      - name: Require every public entry page
         shell: bash
-        run: test -n "$(find htmldocs -type f -name '*.html' -print -quit)"
+        run: |
+          set -euo pipefail
+          pages=(
+            htmldocs/cordnim.html
+            htmldocs/cordnim/app.html
+            htmldocs/cordnim/app/gateway_runtime.html
+            htmldocs/cordnim/application_manifest.html
+            htmldocs/cordnim/build_info.html
+            htmldocs/cordnim/cache.html
+            htmldocs/cordnim/cli.html
+            htmldocs/cordnim/collectors.html
+            htmldocs/cordnim/commands.html
+            htmldocs/cordnim/components.html
+            htmldocs/cordnim/core.html
+            htmldocs/cordnim/gateway.html
+            htmldocs/cordnim/interactions.html
+            htmldocs/cordnim/observability.html
+            htmldocs/cordnim/raw.html
+            htmldocs/cordnim/rest.html
+            htmldocs/cordnim/runtime.html
+            htmldocs/cordnim/testing.html
+            voice/htmldocs/cordnim_voice.html
+            voice/htmldocs/cordnim/voice/libdave/raw.html
+            htmldocs/theindex.html
+            htmldocs/nimdoc.out.css
+            htmldocs/dochack.js
+            voice/htmldocs/theindex.html
+            voice/htmldocs/nimdoc.out.css
+            voice/htmldocs/dochack.js
+          )
+          for page in "${pages[@]}"; do
+            test -s "$page" || {
+              printf 'missing generated API page: %s\n' "$page" >&2
+              exit 1
+            }
+          done
+
+      - name: Check generated documentation links
+        run: |
+          python3 tools/check_doc_links.py htmldocs
+          python3 tools/check_doc_links.py voice/htmldocs
 
       - name: Upload API documentation
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: cordnim-api-docs
-          path: htmldocs/
+          path: |
+            htmldocs/
+            voice/htmldocs/
           if-no-files-found: error
           retention-days: 7
 

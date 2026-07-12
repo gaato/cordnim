@@ -1,4 +1,4 @@
-## Focused v0.1 application facade and response-context tests.
+## Focused application facade and response-context tests.
 
 import std/[assertions, json]
 
@@ -96,7 +96,7 @@ block lifecycle_requires_owned_transport_operations:
   doAssertRaises AppLifecycleError:
     waitFor application.start()
 
-block lifecycle_can_be_configured_once_while_ready:
+block lifecycle_composes_multiple_components_while_ready:
   var trace: seq[string]
   let lifecycle = initAppLifecycle(
     start = proc (): Future[void] {.closure, gcsafe, raises: [].} =
@@ -122,12 +122,45 @@ block lifecycle_can_be_configured_once_while_ready:
     application.configureLifecycle(AppLifecycle())
   application.configureLifecycle(lifecycle)
   doAssert application.hasLifecycle
-  doAssertRaises AppLifecycleError:
-    application.configureLifecycle(lifecycle)
+  application.configureLifecycle(lifecycle)
+  doAssert application.runtimeCount == 2
 
   waitFor application.run()
-  doAssert trace == @["start", "wait", "close"]
+  doAssert trace == @[
+    "start", "start", "wait", "wait", "close", "close"]
   doAssert application.lifecycleState == alsClosed
+
+block lifecycle_starts_in_order_and_closes_in_reverse:
+  var trace: seq[string]
+
+  proc component(name: string): AppLifecycle =
+    initAppLifecycle(
+      start = proc (): Future[void] {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          trace.add("start:" & name)
+        completeNow(),
+      wait = proc (): Future[void] {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          trace.add("wait:" & name)
+        completeNow(),
+      close = proc (): Future[void] {.closure, gcsafe, raises: [].} =
+        {.cast(gcsafe).}:
+          trace.add("close:" & name)
+        completeNow()
+    )
+
+  let application = newDiscordApp(
+    "services",
+    initAppConfig(ingressHttp),
+    initCommandSet[string]())
+  application.configureLifecycle(component("http"))
+  application.configureLifecycle(component("gateway"))
+
+  waitFor application.run()
+  doAssert trace == @[
+    "start:http", "start:gateway",
+    "wait:http", "wait:gateway",
+    "close:gateway", "close:http"]
 
 block close_during_start_joins_start_before_close_hook:
   let startGate = newFuture[void]("cordnim.test.start-gate")

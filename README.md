@@ -1,30 +1,39 @@
 # cordnim
 
-cordnim is a typed Discord application runtime for Nim 2.2. The 0.1 release
-can run HTTP interactions end to end with Chronos. It also provides Discord
-REST scheduling, Gateway WebSocket transport, protocol codecs, and state
-machines for applications that need lower-level control.
+cordnim is a typed Discord application runtime for Nim 2.2. It compiles command
+and form declarations, runs interactions over HTTP or Gateway ingress,
+schedules Discord REST requests, and supervises resumable Gateway shards with
+bounded dispatch and selective entity caching.
 
-The API remains unstable before 1.0.
+No release version has been assigned. The Nimble version is a packaging
+placeholder, and breaking API changes remain allowed while the design settles.
 
 ## Package map
 
 | Import | Purpose |
 | --- | --- |
-| `cordnim` | Typed IDs and secrets, commands, components, and the webhook-only runtime |
-| `cordnim/interactions` | Interaction exchange, HTTP server, router, verification, and webhook responses |
-| `cordnim/rest` | Chronos HTTP transport, rate-limit scheduler, request deadlines, and checked errors |
-| `cordnim/gateway` | WebSocket transport plus Gateway v10 payload, session, heartbeat, identify, shard, and reconnect state |
+| `cordnim` | Application composition, typed IDs and secrets, commands, components, and HTTP interaction runtime |
+| `cordnim/interactions` | Shared HTTP/Gateway dispatcher, response authority, verification, and persistent routes |
+| `cordnim/rest` | Chronos HTTP transport, dynamic rate-limit scheduler, replayable multipart requests, and checked errors |
+| `cordnim/gateway` | Gateway v10 transport, compression, session and shard runners, coordination, dispatch, and entity cache |
 | `cordnim/raw` | Generated Discord HTTP v10 models, route metadata, and the generic request escape hatch |
+| `cordnim/cache` | Policy-driven cache stores and cache/REST entity resolution |
+| `cordnim/observability` | Redacted logging and metric contracts |
+| `cordnim/testing` | Application test harness and deterministic fake clock |
 
 Import the lower-level modules by name. Their wire types stay out of the main
 `cordnim` namespace.
 
-The 0.1 release does not include a complete Gateway shard runner. The transport
-and state machines are present; an owner still needs to join HELLO, heartbeat,
-IDENTIFY or RESUME, compression, reconnect, and event dispatch. Voice media,
-streaming multipart uploads, and high-level wrappers for the full raw route
-inventory also remain outside this release.
+The Gateway runtime owns URL construction, zlib-stream decompression, HELLO and
+heartbeat processing, IDENTIFY or RESUME, reconnect policy, bounded event
+dispatch, and multi-shard supervision. Distributed coordination is an
+injectable lease and fencing contract; Cordnim ships a process-local adapter,
+not a production Redis or etcd backend.
+
+Voice media and high-level wrappers for the full raw HTTP route inventory remain
+outside the current scope. The separate `cordnim_voice` package contains Voice
+Gateway v8 and DAVE protocol state, but not UDP media transport, an Opus
+pipeline, jitter buffering, or mixing.
 
 ## Requirements
 
@@ -83,9 +92,10 @@ Build the example with the libsodium adapter enabled:
 nim c -r --mm:orc -d:cordnimSodium bot.nim
 ```
 
-`newInteractionHttpRuntime` accepts only `webhookOnly` app configurations. A
-hybrid app needs one composite lifecycle that owns both this HTTP path and its
-Gateway event session.
+`newInteractionHttpRuntime` requires HTTP interaction ingress. A hybrid app can
+also enable Gateway event subscriptions and attach its Gateway runtime before
+calling `app.run`; `DiscordApp` starts attached components in order and closes
+them in reverse order.
 
 `ctx.reply` selects the initial response. The HTTP server commits that response
 after Chronos writes it to the client. Calls to `ctx.editOriginal` and
@@ -103,8 +113,10 @@ return a validation result that can contain more than one problem. A
 `TypedRouteCodec[T]` signs versioned, expiring `custom_id` payloads, and
 `ComponentRouter` dispatches decoded actions after a restart.
 
-Applications provide signing-key storage and durable route registration. The
-0.1 package has no database adapter or collector-style route registry.
+Applications provide signing-key storage and retain old verification keys for
+their planned route lifetime. Typed routes survive restart when the next process
+has the same keys and migration decoder. `Collector[T]` is available for
+bounded, short-lived in-process flows; it is not persistent route storage.
 
 ## Operator CLI
 
@@ -140,6 +152,8 @@ nimble schemaCheck
 nimble docs
 ```
 
-See [docs/architecture.md](docs/architecture.md) for ownership boundaries and
-[docs/security.md](docs/security.md) for verification, delivery, retry, and
-credential rules.
+The guides cover [architecture](docs/architecture.md),
+[commands](docs/commands.md), [components and forms](docs/components.md),
+[interactions](docs/interactions.md), [REST](docs/rest.md),
+[Gateway operation](docs/gateway.md), [raw schema generation](docs/raw-schema.md),
+[runtime operations](docs/operations.md), and [security](docs/security.md).

@@ -36,7 +36,7 @@ type
     surface*: InteractionSurface ## Surface where the command was invoked.
     integrationOwners*: seq[IntegrationOwner] ## Authorization owners reported
       ## by Discord.
-    invokingUserId*: UserId ## User who actually invoked the interaction.
+    invokingUserId*: UserId ## User who invoked the interaction.
     guildId*: Option[GuildId] ## Guild where the invocation happened, if any.
     appPermissions*: Permissions ## Effective application permissions.
     memberPermissions*: Option[Permissions] ## Effective invoking-member

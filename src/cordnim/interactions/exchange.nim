@@ -18,6 +18,7 @@ type
     raDefer, ## Select a deferred initial message response.
     raDeferUpdate, ## Select a deferred component-message update.
     raUpdateMessage, ## Select an immediate component-message update.
+    raAutocomplete, ## Select autocomplete choices.
     raModal, ## Select a modal as the initial response.
     raEditOriginal, ## Edit the original response after delivery.
     raFollowup ## Create a follow-up message after delivery.
@@ -25,7 +26,7 @@ type
   ContextResponse* = object ## One response operation at the transport port.
     action*: ResponseAction ## Semantic operation selected by the handler.
     visibility*: Visibility ## Visibility after installation-policy coercion.
-    body*: JsonNode ## Discord message, update, or modal data.
+    body*: JsonNode ## Discord message, update, autocomplete, or modal data.
 
   ContextResponseSender* = proc (
       response: ContextResponse
@@ -43,7 +44,8 @@ type
     kindValue: InteractionType
     responsePolicy: ResponsePolicy
     responderValue: InteractionResponder
-    selectedFuture: Future[ContextResponse]
+    selectedValue: ContextResponse
+    selectedSignal: Future[void]
     deliveredFuture: Future[void]
     selectedClaim: InitialResponseClaim
     selectedKind: InitialResponseKind
@@ -68,6 +70,63 @@ func responseErrorMessage(error: InteractionResponseError): string =
 proc failExchange(message: string) {.noinline, noreturn.} =
   raise newException(InteractionExchangeError, message)
 
+proc shieldWaiter(source: Future[void]): Future[void] =
+  ## Mirrors one shared signal while making cancellation waiter-local.
+  ##
+  ## Chronos `noCancel` intentionally resists cancellation of its wrapper. An
+  ## interaction waiter instead needs to detach promptly while leaving the
+  ## shared source untouched, so this wrapper owns only its callback.
+  let waiter = newFuture[void]("cordnim.interactions.shielded-waiter")
+  proc completeWaiter(udata: pointer) {.gcsafe, raises: [].} =
+    discard udata
+    if waiter.finished:
+      return
+    if source.cancelled:
+      waiter.cancelAndSchedule()
+    elif source.failed:
+      waiter.fail(source.error, warn = false)
+    else:
+      waiter.complete()
+  proc detach(udata: pointer) {.gcsafe, raises: [].} =
+    discard udata
+    if not source.finished:
+      source.removeCallback(completeWaiter)
+  waiter.cancelCallback = detach
+  if source.finished:
+    completeWaiter(nil)
+  else:
+    source.addCallback(completeWaiter)
+  waiter
+
+func copiedBody(body: JsonNode): JsonNode =
+  if body.isNil:
+    nil
+  else:
+    body.copy()
+
+func frozenResponse(response: ContextResponse): ContextResponse =
+  ContextResponse(
+    action: response.action,
+    visibility: response.visibility,
+    body: response.body.copiedBody())
+
+proc initialResponseKind(action: ResponseAction): InitialResponseKind =
+  case action
+  of raReply:
+    irkMessage
+  of raDefer:
+    irkDeferredMessage
+  of raDeferUpdate:
+    irkDeferredUpdate
+  of raUpdateMessage:
+    irkUpdateMessage
+  of raAutocomplete:
+    irkAutocomplete
+  of raModal:
+    irkModal
+  of raEditOriginal, raFollowup:
+    failExchange("post-acknowledgement action cannot select an initial response")
+
 proc newInteractionExchange*(interactionType: InteractionType,
                              policy: ResponsePolicy,
                              responder: InteractionResponder,
@@ -84,7 +143,7 @@ proc newInteractionExchange*(interactionType: InteractionType,
   result.responsePolicy = policy
   result.responderValue = responder
   result.postAckSender = postAckSender
-  result.selectedFuture = newFuture[ContextResponse](
+  result.selectedSignal = newFuture[void](
     "cordnim.interactions.response-selected")
   result.deliveredFuture = newFuture[void](
     "cordnim.interactions.response-delivered")
@@ -122,21 +181,45 @@ func effectiveVisibility*(exchange: InteractionExchange,
   else:
     requested
 
-func initialResponse*(exchange: InteractionExchange):
-                      Future[ContextResponse] =
-  ## Returns the future completed when one caller selects the initial response.
-  exchange.selectedFuture
+proc initialResponse*(exchange: InteractionExchange):
+                      Future[ContextResponse] {.async.} =
+  ## Waits for selection and returns a detached copy of the selected response.
+  ##
+  ## Cancelling this waiter cannot cancel the exchange's shared selection
+  ## signal, and mutating the returned JSON cannot alter the selected output.
+  await exchange.selectedSignal.shieldWaiter()
+  return exchange.selectedValue.frozenResponse()
 
-func deliveryReceipt*(exchange: InteractionExchange): Future[void] =
-  ## Returns the future completed only after transport delivery is confirmed.
-  exchange.deliveredFuture
+func initialResponseReady*(exchange: InteractionExchange): bool =
+  ## Reports whether an initial response has been selected.
+  not exchange.isNil and exchange.selectedSignal.finished
+
+proc waitInitialSelection*(exchange: InteractionExchange): Future[void] =
+  ## Returns a cancellation-shielded selection signal for response pumps.
+  exchange.selectedSignal.shieldWaiter()
+
+proc selectedInitial*(exchange: InteractionExchange): ContextResponse =
+  ## Returns a detached copy of the already-selected initial response.
+  if exchange.isNil or not exchange.selectedSignal.finished:
+    failExchange("no initial interaction response has been selected")
+  exchange.selectedValue.frozenResponse()
+
+proc deliveryReceipt*(exchange: InteractionExchange): Future[void] =
+  ## Returns a cancellation-shielded delivery confirmation receipt.
+  ##
+  ## A cancelled waiter never cancels the shared receipt or prevents ingress
+  ## from confirming the selected response later.
+  exchange.deliveredFuture.shieldWaiter()
 
 proc selectInitial*(exchange: InteractionExchange,
-                    response: sink ContextResponse,
-                    responseKind: InitialResponseKind) =
+                    response: sink ContextResponse) =
   ## Atomically selects one initial response without claiming delivery.
+  ##
+  ## The semantic response kind is derived from `response.action`, so callers
+  ## cannot pair a callback action with a contradictory state transition.
   if exchange.isNil:
     failExchange("interaction response exchange is unavailable")
+  let responseKind = response.action.initialResponseKind()
   if responseKind notin exchange.kindValue.allowedInitialKinds:
     failExchange(irePolicyUnsupported.responseErrorMessage())
 
@@ -146,7 +229,8 @@ proc selectInitial*(exchange: InteractionExchange,
 
   exchange.selectedClaim = claim.claim
   exchange.selectedKind = responseKind
-  exchange.selectedFuture.complete(response)
+  exchange.selectedValue = response.frozenResponse()
+  exchange.selectedSignal.complete()
 
 proc confirmInitialDelivery*(exchange: InteractionExchange) {.
     gcsafe, raises: [].} =
@@ -185,22 +269,25 @@ proc reserveFollowup(exchange: InteractionExchange): bool =
   true
 
 proc sendAfterDelivery*(exchange: InteractionExchange,
-                        response: ContextResponse): Future[void] {.async.} =
+                        response: sink ContextResponse): Future[void] {.async.} =
   ## Waits for confirmed ACK delivery, then uses the post-ACK transport port.
   if exchange.isNil:
     failExchange("interaction response exchange is unavailable")
   if response.action notin {raEditOriginal, raFollowup}:
     failExchange("initial response must be selected through selectInitial")
 
-  await exchange.deliveredFuture
+  # Freeze before the first await: a caller may retain and mutate the JsonNode
+  # it passed while this operation waits for initial delivery.
+  let frozen = response.frozenResponse()
+  await exchange.deliveryReceipt()
   let permitted = exchange.responderValue.canFollowup(monotonicMillis())
   if not permitted.ok:
     failExchange(permitted.error.responseErrorMessage())
   if exchange.postAckSender.isNil:
     failExchange("post-acknowledgement response transport is not configured")
-  if response.action == raFollowup and not exchange.reserveFollowup():
+  if frozen.action == raFollowup and not exchange.reserveFollowup():
     failExchange("interaction follow-up budget is exhausted")
 
   # A non-idempotent follow-up reservation remains consumed when transport
   # outcome is unknown; restoring it could create a sixth Discord follow-up.
-  await exchange.postAckSender(response)
+  await exchange.postAckSender(frozen)

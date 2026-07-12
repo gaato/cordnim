@@ -24,3 +24,20 @@ suite "typed interaction response capability":
     var pending = move transition.pending
     let unknown = markTransportUnknown(move pending)
     check unknown.deadlines.ackDeadline == MonoMillis(4_000)
+
+  test "autocomplete and update transitions have explicit typed entry points":
+    var autocomplete = freshInteraction(ikAutocomplete, MonoMillis(1_000))
+    let autocompleteTransition = beginAutocomplete(
+      move autocomplete, MonoMillis(1_100))
+    check autocompleteTransition.ok
+
+    var commandModal = freshInteraction(
+      ikCommandModalSubmit, MonoMillis(1_000))
+    let rejected = beginDeferredUpdate(move commandModal, MonoMillis(1_100))
+    check not rejected.ok
+    check rejected.error == irePolicyUnsupported
+
+    var componentModal = freshInteraction(
+      ikComponentModalSubmit, MonoMillis(1_000))
+    let accepted = beginUpdate(move componentModal, MonoMillis(1_100))
+    check accepted.ok

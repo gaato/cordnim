@@ -11,7 +11,10 @@ type
 
   EventPolicy* = object ## Validated dispatch limits used by a Gateway runtime.
     kind*: EventPolicyKind ## Ordering model for event handlers.
-    queueCapacity*: int ## Maximum queued events before backpressure applies.
+    laneQueueCapacity*: int ## Maximum events queued *per lane* before that lane
+      ## applies backpressure. The runtime allocates this depth to every lane, so
+      ## the aggregate ceiling is `laneQueueCapacity * <lane count>`, not this
+      ## value. Named per-lane to keep that invariant unambiguous.
     maxConcurrent*: int ## Maximum handler lanes active at once.
     maxPartitions*: int ## Number of stable partition lanes.
 
@@ -23,33 +26,41 @@ type
     policy: EventPolicy
     nextConcurrentLane: int
 
-func orderedPolicy*(queueCapacity: Positive): EventPolicy {.raises: [].} =
+func orderedPolicy*(laneQueueCapacity: Positive): EventPolicy {.raises: [].} =
   ## Creates a single-lane policy that preserves global event order.
+  ##
+  ## With one lane, `laneQueueCapacity` is also the aggregate admission ceiling.
   EventPolicy(
     kind: orderedEvents,
-    queueCapacity: int(queueCapacity),
+    laneQueueCapacity: int(laneQueueCapacity),
     maxConcurrent: 1,
     maxPartitions: 1,
   )
 
 func concurrentPolicy*(
-    queueCapacity, maxConcurrent: Positive,
+    laneQueueCapacity, maxConcurrent: Positive,
 ): EventPolicy {.raises: [].} =
   ## Creates a round-robin policy with at most `maxConcurrent` handler lanes.
+  ##
+  ## `laneQueueCapacity` bounds each lane independently; the aggregate ceiling is
+  ## `laneQueueCapacity * maxConcurrent`.
   EventPolicy(
     kind: concurrentEvents,
-    queueCapacity: int(queueCapacity),
+    laneQueueCapacity: int(laneQueueCapacity),
     maxConcurrent: int(maxConcurrent),
     maxPartitions: 1,
   )
 
 func partitionedPolicy*(
-    queueCapacity, maxPartitions: Positive,
+    laneQueueCapacity, maxPartitions: Positive,
 ): EventPolicy {.raises: [].} =
   ## Creates a policy that maps equal partition keys to the same ordered lane.
+  ##
+  ## `laneQueueCapacity` bounds each partition lane independently; the aggregate
+  ## ceiling is `laneQueueCapacity * maxPartitions`.
   EventPolicy(
     kind: partitionedEvents,
-    queueCapacity: int(queueCapacity),
+    laneQueueCapacity: int(laneQueueCapacity),
     maxConcurrent: int(maxPartitions),
     maxPartitions: int(maxPartitions),
   )

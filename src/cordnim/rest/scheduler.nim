@@ -4,9 +4,13 @@
 ## single Chronos task drives it by calling `takeReady`, executing the returned
 ## request, then applying Discord's response headers with `complete`.
 
-import std/[algorithm, hashes, options, tables]
+import std/[algorithm, hashes, options, sets, strutils, tables]
 
 import ./request
+
+const
+  MaxRetainedIdleBuckets* = 1_024
+    ## Maximum inactive bucket states retained for route reuse.
 
 type
   ScheduledRequestId* = distinct uint64 ## Process-local identity assigned when
@@ -42,14 +46,21 @@ type
     resetAt: Option[MonoMillis]
     queue: seq[QueueEntry]
     inFlight: int
+    lastTouched: uint64
+
+  CancellationGroupState = object
+    members: int
+    cancelled: bool
 
   Scheduler* = object ## Deterministic mutable state for all REST buckets and
     ## queued requests.
     nextId: uint64
     nextSequence: uint64
+    nextTouch: uint64
     routeBuckets: Table[string, string]
     buckets: Table[string, BucketState]
-    cancelled: Table[uint64, bool]
+    cancellationGroups: Table[uint64, CancellationGroupState]
+    cancellationMembers: Table[uint64, uint64]
     globalResetAt: Option[MonoMillis]
     rejections: seq[RejectedRequest]
 
@@ -79,9 +90,11 @@ proc initScheduler*(): Scheduler =
   ## Creates an empty scheduler with initialized tables and request IDs.
   result.nextId = 1
   result.nextSequence = 1
+  result.nextTouch = 1
   result.routeBuckets = initTable[string, string]()
   result.buckets = initTable[string, BucketState]()
-  result.cancelled = initTable[uint64, bool]()
+  result.cancellationGroups = initTable[uint64, CancellationGroupState]()
+  result.cancellationMembers = initTable[uint64, uint64]()
 
 func `==`*(left, right: ScheduledRequestId): bool {.borrow.}
   ## Tests process-local scheduled request identities for equality.
@@ -102,11 +115,41 @@ func bucketFor(scheduler: Scheduler, route: RouteKey): string =
   scheduler.routeBuckets.getOrDefault(routeName, provisionalBucket(route))
 
 func isCancelled(scheduler: Scheduler, request: RawRequest): bool =
-  request.meta.cancellationId.isSome and
-    scheduler.cancelled.getOrDefault(request.meta.cancellationId.get(), false)
+  if request.meta.cancellationId.isNone:
+    return false
+  scheduler.cancellationGroups.getOrDefault(
+    request.meta.cancellationId.get()).cancelled
 
 func isExpired(request: RawRequest, now: MonoMillis): bool =
   request.meta.deadline.isSome and request.meta.deadline.get() <= now
+
+proc registerCancellationMember(scheduler: var Scheduler,
+                                scheduledId: ScheduledRequestId,
+                                cancellationId: Option[uint64]) =
+  if cancellationId.isNone:
+    return
+  let groupId = cancellationId.get()
+  var group = scheduler.cancellationGroups.getOrDefault(groupId)
+  inc group.members
+  scheduler.cancellationGroups[groupId] = group
+  scheduler.cancellationMembers[scheduledId.toUint64()] = groupId
+
+proc settle*(scheduler: var Scheduler, scheduled: ScheduledRequest) =
+  ## Releases one request from its cancellation group after terminal handling.
+  ##
+  ## Retries retain the same scheduled ID and must not be settled between
+  ## attempts. Repeated calls are harmless.
+  let scheduledId = scheduled.id.toUint64()
+  if not scheduler.cancellationMembers.hasKey(scheduledId):
+    return
+  let groupId = scheduler.cancellationMembers.getOrDefault(scheduledId)
+  scheduler.cancellationMembers.del(scheduledId)
+  var group = scheduler.cancellationGroups.getOrDefault(groupId)
+  if group.members <= 1:
+    scheduler.cancellationGroups.del(groupId)
+  else:
+    dec group.members
+    scheduler.cancellationGroups[groupId] = group
 
 func entryCmp(a, b: QueueEntry): int =
   # Readiness gates dispatch first. Priority and deadline then reduce latency,
@@ -125,16 +168,75 @@ func entryCmp(a, b: QueueEntry): int =
     return if aDeadline.isSome: -1 else: 1
   cmp(a.sequence, b.sequence)
 
+func dispatchCmp(a, b: QueueEntry): int =
+  # `readyAt` gates eligibility but must not outrank an interaction
+  # acknowledgement once both requests are ready.
+  if a.request.request.meta.priority != b.request.request.meta.priority:
+    return cmp(a.request.request.meta.priority,
+      b.request.request.meta.priority)
+  let aDeadline = a.request.request.meta.deadline
+  let bDeadline = b.request.request.meta.deadline
+  if aDeadline.isSome and bDeadline.isSome and
+      aDeadline.get() != bDeadline.get():
+    return if aDeadline.get() < bDeadline.get(): -1 else: 1
+  if aDeadline.isSome != bDeadline.isSome:
+    return if aDeadline.isSome: -1 else: 1
+  cmp(a.sequence, b.sequence)
+
 proc sortQueue(bucket: var BucketState) =
   bucket.queue.sort(entryCmp)
+
+proc touch(scheduler: var Scheduler, bucket: var BucketState) =
+  bucket.lastTouched = scheduler.nextTouch
+  inc scheduler.nextTouch
+
+proc refreshBucket(bucket: var BucketState, now: MonoMillis) =
+  if bucket.resetAt.isSome and bucket.resetAt.get() <= now:
+    bucket.resetAt = none(MonoMillis)
+    bucket.remaining = bucket.limit
+
+proc pruneIdleBuckets(scheduler: var Scheduler, now: MonoMillis) =
+  var candidates: seq[tuple[name: string, touched: uint64]]
+  for name, bucket in scheduler.buckets.mpairs:
+    bucket.refreshBucket(now)
+    if bucket.queue.len == 0 and bucket.inFlight == 0 and
+        bucket.resetAt.isNone:
+      candidates.add((name, bucket.lastTouched))
+  if candidates.len <= MaxRetainedIdleBuckets:
+    return
+  candidates.sort(proc(a, b: tuple[name: string, touched: uint64]): int =
+    if a.touched != b.touched:
+      cmp(a.touched, b.touched)
+    else:
+      cmp(a.name, b.name)
+  )
+  let removalCount = candidates.len - MaxRetainedIdleBuckets
+  var removed = initHashSet[string]()
+  for index in 0..<removalCount:
+    removed.incl(candidates[index].name)
+    scheduler.buckets.del(candidates[index].name)
+
+  var staleRoutes: seq[string]
+  for routeName, bucketName in scheduler.routeBuckets.pairs:
+    if bucketName in removed:
+      staleRoutes.add routeName
+  for routeName in staleRoutes:
+    scheduler.routeBuckets.del(routeName)
 
 proc enqueue*(scheduler: var Scheduler, request: sink RawRequest,
               now: MonoMillis): ScheduledRequestId =
   ## Moves a request into its provisional or learned Discord bucket.
+  let policyProblems = request.meta.retryPolicy.validate()
+  if policyProblems.len != 0:
+    raise newException(ValueError, policyProblems.join("; "))
+  scheduler.pruneIdleBuckets(now)
   let id = ScheduledRequestId(scheduler.nextId)
   inc scheduler.nextId
+  let cancellationId = request.meta.cancellationId
+  scheduler.registerCancellationMember(id, cancellationId)
   let bucketName = scheduler.bucketFor(request.route)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
+  scheduler.touch(bucket)
   bucket.queue.add(QueueEntry(
     request: ScheduledRequest(id: id, request: request, attempt: 1),
     sequence: scheduler.nextSequence,
@@ -146,13 +248,11 @@ proc enqueue*(scheduler: var Scheduler, request: sink RawRequest,
   id
 
 proc cancel*(scheduler: var Scheduler, cancellationId: uint64) =
-  ## Marks a cancellation group for rejection on the next scheduler poll.
-  scheduler.cancelled[cancellationId] = true
-
-proc refreshBucket(bucket: var BucketState, now: MonoMillis) =
-  if bucket.resetAt.isSome and bucket.resetAt.get() <= now:
-    bucket.resetAt = none(MonoMillis)
-    bucket.remaining = bucket.limit
+  ## Cancels currently known members without leaving a permanent tombstone.
+  if scheduler.cancellationGroups.hasKey(cancellationId):
+    var group = scheduler.cancellationGroups.getOrDefault(cancellationId)
+    group.cancelled = true
+    scheduler.cancellationGroups[cancellationId] = group
 
 func availableAt(bucket: BucketState, entry: QueueEntry,
                  now: MonoMillis): MonoMillis =
@@ -163,6 +263,13 @@ func availableAt(bucket: BucketState, entry: QueueEntry,
   if result < now:
     result = now
 
+func saturatingAdd(now: MonoMillis, delay: int64): MonoMillis =
+  let nonNegative = max(0'i64, delay)
+  if nonNegative > 0 and int64(now) > high(int64) - nonNegative:
+    MonoMillis(high(int64))
+  else:
+    MonoMillis(int64(now) + nonNegative)
+
 proc discardInvalid(scheduler: var Scheduler, bucket: var BucketState,
                     now: MonoMillis) =
   var kept: seq[QueueEntry]
@@ -172,11 +279,13 @@ proc discardInvalid(scheduler: var Scheduler, bucket: var BucketState,
         id: entry.request.id,
         kind: rjkCancelled
       ))
+      scheduler.settle(entry.request)
     elif entry.request.request.isExpired(now):
       scheduler.rejections.add(RejectedRequest(
         id: entry.request.id,
         kind: rjkDeadlineExpired
       ))
+      scheduler.settle(entry.request)
     else:
       kept.add entry
   bucket.queue = move kept
@@ -187,33 +296,63 @@ proc takeReady*(scheduler: var Scheduler, now: MonoMillis): TakeResult =
   ## Calls must be followed by `complete` for every `tkReady` result so the
   ## reservation is released. Invalid queued requests are exposed separately
   ## through `takeRejections`.
+  var globalBlockedUntil = none(MonoMillis)
   if scheduler.globalResetAt.isSome:
     if scheduler.globalResetAt.get() > now:
-      return TakeResult(kind: tkWait, wakeAt: scheduler.globalResetAt.get())
-    scheduler.globalResetAt = none(MonoMillis)
+      globalBlockedUntil = scheduler.globalResetAt
+    else:
+      scheduler.globalResetAt = none(MonoMillis)
 
   var chosenBucket = ""
   var chosenEntry: QueueEntry
+  var chosenIndex = -1
   var found = false
+  var hasQueued = false
   var earliest: Option[MonoMillis]
 
   for bucketName, storedBucket in scheduler.buckets.mpairs:
     storedBucket.refreshBucket(now)
     scheduler.discardInvalid(storedBucket, now)
-    if storedBucket.queue.len > 0 and storedBucket.inFlight == 0:
+    if storedBucket.queue.len > 0:
+      hasQueued = true
+    for entry in storedBucket.queue:
+      let deadline = entry.request.request.meta.deadline
+      if deadline.isSome and
+          (earliest.isNone or deadline.get() < earliest.get()):
+        earliest = deadline
+
+    if globalBlockedUntil.isNone and storedBucket.queue.len > 0 and
+        storedBucket.inFlight == 0:
       # Each learned Discord bucket is serialized. Different buckets still run
       # concurrently in the Chronos driver, and this conservative rule avoids
       # racing multiple first requests before Discord reveals their limit.
-      storedBucket.sortQueue()
-      let entry = storedBucket.queue[0]
-      let ready = storedBucket.availableAt(entry, now)
-      if ready > now:
-        if earliest.isNone or ready < earliest.get():
-          earliest = some(ready)
-      elif not found or entry.entryCmp(chosenEntry) < 0:
+      var bucketFound = false
+      var bucketEntry: QueueEntry
+      var bucketIndex = -1
+      for index, entry in storedBucket.queue:
+        let ready = storedBucket.availableAt(entry, now)
+        if ready > now:
+          if earliest.isNone or ready < earliest.get():
+            earliest = some(ready)
+        elif not bucketFound or entry.dispatchCmp(bucketEntry) < 0:
+          bucketFound = true
+          bucketEntry = entry
+          bucketIndex = index
+      if bucketFound and
+          (not found or bucketEntry.dispatchCmp(chosenEntry) < 0):
         found = true
         chosenBucket = bucketName
-        chosenEntry = entry
+        chosenEntry = bucketEntry
+        chosenIndex = bucketIndex
+
+  scheduler.pruneIdleBuckets(now)
+
+  if globalBlockedUntil.isSome:
+    if not hasQueued:
+      return TakeResult(kind: tkIdle)
+    if earliest.isNone or globalBlockedUntil.get() < earliest.get():
+      earliest = globalBlockedUntil
+    return TakeResult(kind: tkWait, wakeAt: earliest.get())
 
   if not found:
     if earliest.isSome:
@@ -223,7 +362,7 @@ proc takeReady*(scheduler: var Scheduler, now: MonoMillis): TakeResult =
   # Reserve before returning so another poll cannot oversubscribe this bucket.
   # `complete` releases `inFlight` and reconciles remaining with server headers.
   var bucket = scheduler.buckets.getOrDefault(chosenBucket)
-  bucket.queue.delete(0)
+  bucket.queue.delete(chosenIndex)
   inc bucket.inFlight
   if bucket.remaining.isSome:
     bucket.remaining = some(max(0, bucket.remaining.get() - 1))
@@ -244,7 +383,13 @@ proc mergeBuckets(scheduler: var Scheduler, fromName, toName: string) =
       destination.limit = source.limit
     if destination.remaining.isNone:
       destination.remaining = source.remaining
+    elif source.remaining.isSome:
+      destination.remaining = some(min(
+        destination.remaining.get(), source.remaining.get()))
     if destination.resetAt.isNone:
+      destination.resetAt = source.resetAt
+    elif source.resetAt.isSome and
+        destination.resetAt.get() < source.resetAt.get():
       destination.resetAt = source.resetAt
     destination.inFlight += source.inFlight
     scheduler.buckets.del(fromName)
@@ -264,34 +409,49 @@ proc complete*(scheduler: var Scheduler, scheduled: ScheduledRequest,
     bucketName = learnedName
 
   var bucket = scheduler.buckets.getOrDefault(bucketName)
+  scheduler.touch(bucket)
   if bucket.inFlight > 0:
     dec bucket.inFlight
   if update.limit.isSome:
     bucket.limit = update.limit
   if update.remaining.isSome:
-    bucket.remaining = update.remaining
+    if bucket.remaining.isSome:
+      bucket.remaining = some(min(
+        bucket.remaining.get(), update.remaining.get()))
+    else:
+      bucket.remaining = update.remaining
   if update.resetAfterMs.isSome:
-    bucket.resetAt = some(now + max(0'i64, update.resetAfterMs.get()))
+    let candidate = now.saturatingAdd(update.resetAfterMs.get())
+    if bucket.resetAt.isNone or bucket.resetAt.get() < candidate:
+      bucket.resetAt = some(candidate)
   if update.wasRateLimited and update.retryAfterMs.isSome:
-    let resetAt = now + max(0'i64, update.retryAfterMs.get())
+    let resetAt = now.saturatingAdd(update.retryAfterMs.get())
     if update.scope == rlsGlobal:
-      scheduler.globalResetAt = some(resetAt)
+      if scheduler.globalResetAt.isNone or
+          scheduler.globalResetAt.get() < resetAt:
+        scheduler.globalResetAt = some(resetAt)
     else:
       bucket.remaining = some(0)
-      bucket.resetAt = some(resetAt)
+      if bucket.resetAt.isNone or bucket.resetAt.get() < resetAt:
+        bucket.resetAt = some(resetAt)
   scheduler.buckets[bucketName] = bucket
+  scheduler.pruneIdleBuckets(now)
 
-proc retry*(scheduler: var Scheduler, scheduled: sink ScheduledRequest,
+proc retry*(scheduler: var Scheduler, scheduled: ScheduledRequest,
             now: MonoMillis): bool =
   ## Requeues a permitted request using capped exponential backoff.
   ##
   ## Returns `false` when idempotency evidence or attempts are exhausted.
   let meta = scheduled.request.meta
-  if not meta.canRetry or scheduled.attempt >= meta.retryPolicy.maxAttempts:
+  if scheduled.attempt < 1 or not meta.retryPolicy.valid() or
+      not meta.canRetry or not scheduled.request.body.replayable() or
+      scheduled.attempt >= meta.retryPolicy.maxAttempts:
     return false
   let bucketName = scheduler.bucketFor(scheduled.request.route)
   var bucket = scheduler.buckets.getOrDefault(bucketName)
   let nextAttempt = scheduled.attempt + 1
+  let delay = meta.retryPolicy.retryDelayMs(nextAttempt)
+  let readyAt = now.saturatingAdd(delay)
   bucket.queue.add(QueueEntry(
     request: ScheduledRequest(
       id: scheduled.id,
@@ -299,7 +459,7 @@ proc retry*(scheduler: var Scheduler, scheduled: sink ScheduledRequest,
       attempt: nextAttempt
     ),
     sequence: scheduler.nextSequence,
-    readyAt: now + meta.retryPolicy.retryDelayMs(nextAttempt)
+    readyAt: readyAt
   ))
   inc scheduler.nextSequence
   bucket.sortQueue()
@@ -315,6 +475,18 @@ func inFlightCount*(scheduler: Scheduler): int =
   ## Returns the number of buckets reserved by active transport attempts.
   for bucket in scheduler.buckets.values:
     result += bucket.inFlight
+
+func activeCancellationGroupCount*(scheduler: Scheduler): int =
+  ## Returns live cancellation groups for diagnostics and leak checks.
+  scheduler.cancellationGroups.len
+
+func retainedBucketCount*(scheduler: Scheduler): int =
+  ## Returns retained provisional and learned bucket states for diagnostics.
+  scheduler.buckets.len
+
+func learnedRouteCount*(scheduler: Scheduler): int =
+  ## Returns route-to-learned-bucket mappings retained for reuse.
+  scheduler.routeBuckets.len
 
 proc takeRejections*(scheduler: var Scheduler): seq[RejectedRequest] =
   ## Moves all accumulated cancellation and deadline rejections to the caller.
