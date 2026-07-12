@@ -16,10 +16,10 @@ import cordnim/rest/request
 proc fetchCurrentAuthorization*(client: ChronosRestClient;
                                 options = initApiCallOptions()):
                                 Future[OAuthAuthorization] {.async.} =
-  ## Returns metadata for the credential configured on the REST transport.
+  ## Returns metadata for the OAuth bearer authorization on the REST transport.
   let raw = raw_request.initRawRequest(oauth_routes.getMyOauth2Authorization)
   return await client.executeJson(raw, decodeOAuthAuthorization,
-    options.requestMeta(idSafe))
+    auth = darOAuthBearer, meta = options.requestMeta(idSafe))
 
 proc fetchCurrentOAuthApplication*(client: ChronosRestClient;
                                    options = initApiCallOptions()):
@@ -27,7 +27,7 @@ proc fetchCurrentOAuthApplication*(client: ChronosRestClient;
   ## Returns the application associated with the current OAuth authorization.
   let raw = raw_request.initRawRequest(oauth_routes.getMyOauth2Application)
   return await client.executeJson(raw, decodePrivateApplication,
-    options.requestMeta(idSafe))
+    auth = darBot, meta = options.requestMeta(idSafe))
 
 proc fetchOAuthPublicKeys*(client: ChronosRestClient;
                            options = initApiCallOptions()):
@@ -35,7 +35,7 @@ proc fetchOAuthPublicKeys*(client: ChronosRestClient;
   ## Fetches Discord's public JSON Web Key set.
   let raw = raw_request.initRawRequest(oauth_routes.getPublicKeys)
   return await client.executeJson(raw, decodeOAuthPublicKeys,
-    options.requestMeta(idSafe))
+    auth = darNone, meta = options.requestMeta(idSafe))
 
 proc fetchOpenIdIdentity*(client: ChronosRestClient;
                           options = initApiCallOptions()):
@@ -43,4 +43,4 @@ proc fetchOpenIdIdentity*(client: ChronosRestClient;
   ## Fetches OpenID Connect claims for the current bearer credential.
   let raw = raw_request.initRawRequest(oauth_routes.getOpenidConnectUserinfo)
   return await client.executeJson(raw, decodeOpenIdIdentity,
-    options.requestMeta(idSafe))
+    auth = darOAuthBearer, meta = options.requestMeta(idSafe))

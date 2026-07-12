@@ -109,7 +109,7 @@ proc buildWebhookSender(client: ChronosRestClient, applicationIdText: string,
         response.messageBody()
       )
       discard await client.executeDocument(
-        raw, response.action.requestMeta(), auth = darNone,
+        raw, auth = darNone, meta = response.action.requestMeta(),
         statuses = {SuccessStatus(200)})
     {.cast(gcsafe).}:
       return send()

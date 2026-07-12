@@ -106,7 +106,7 @@ proc sendInteractionCallback(
     ],
     callback
   )
-  await client.executeNoContent(raw, meta, auth = darNone)
+  await client.executeNoContent(raw, auth = darNone, meta = meta)
 
 proc unsafeGatewayInteractionHandler*[S](
     interactionDispatcher: InteractionDispatcher[S];

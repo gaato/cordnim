@@ -85,6 +85,8 @@ block oauth_resources_use_safe_retryable_routes:
     "scopes": ["identify"],
     "user": completeUser(),
   }), matchRoute("GET /oauth2/@me"))
+  scripted.expectRequest(jsonResponse(200, privateApplication()),
+    matchRoute("GET /oauth2/applications/@me"))
   scripted.expectRequest(jsonResponse(200, %*{
     "keys": [{
       "kty": "RSA", "use": "sig", "kid": "key-1",
@@ -97,11 +99,18 @@ block oauth_resources_use_safe_retryable_routes:
   let client = startedClient(scripted)
   doAssert (waitFor client.fetchCurrentAuthorization()).user.get.username ==
     "owner"
+  doAssert (waitFor client.fetchCurrentOAuthApplication()).application.name ==
+    "Cordnim test app"
   doAssert (waitFor client.fetchOAuthPublicKeys()).keys[0].keyId == "key-1"
   doAssert (waitFor client.fetchOpenIdIdentity()).subject == "2"
   waitFor client.stop()
-  for observed in scripted.observedRequests():
-    doAssert observed.httpMethod == hmGet
+  let observed = scripted.observedRequests()
+  for request in observed:
+    doAssert request.httpMethod == hmGet
+  doAssert observed[0].authRequirement == darOAuthBearer
+  doAssert observed[1].authRequirement == darBot
+  doAssert observed[2].authRequirement == darNone
+  doAssert observed[3].authRequirement == darOAuthBearer
   scripted.assertSatisfied()
 
 block application_resources_render_typed_ids:
@@ -112,13 +121,15 @@ block application_resources_render_typed_ids:
   let application = waitFor client.fetchApplication(ApplicationId.parseId("1"))
   doAssert application.application.name == "Cordnim test app"
   waitFor client.stop()
-  doAssert scripted.observedRequests()[0].redactedPath == "/applications/1"
+  let observed = scripted.observedRequests()[0]
+  doAssert observed.redactedPath == "/applications/1"
+  doAssert observed.authRequirement == darBot
   scripted.assertSatisfied()
 
 block entitlement_queries_are_typed_and_creation_is_not_retryable:
   let scripted = newScriptedRestTransport()
   scripted.expectRequest(jsonResponse(200, %*[entitlement()]))
-  scripted.expectRequest(jsonResponse(201, entitlement()))
+  scripted.expectRequest(jsonResponse(200, entitlement()))
   let client = startedClient(scripted)
   let appId = ApplicationId.parseId("1")
   let skuId = SkuId.parseId("11")
@@ -138,7 +149,9 @@ block entitlement_queries_are_typed_and_creation_is_not_retryable:
   doAssert observed[0].redactedPath.contains("limit=25")
   doAssert observed[0].redactedPath.contains("only_active=true")
   doAssert observed[0].httpMethod == hmGet
+  doAssert observed[0].authRequirement == darBotOrOAuthBearer
   doAssert observed[1].httpMethod == hmPost
+  doAssert observed[1].authRequirement == darBot
   let body = parseJson(observed[1].bodyBytes.bytesText())
   doAssert body == grant.toJson
   scripted.assertSatisfied()
@@ -158,6 +171,16 @@ block subscription_queries_and_results_remain_typed:
   waitFor client.stop()
   for observed in scripted.observedRequests():
     doAssert observed.redactedPath.contains("user_id=2")
+    doAssert observed.authRequirement == darBotOrOAuthBearer
+  scripted.assertSatisfied()
+
+block current_user_entitlements_require_a_bearer_token:
+  let scripted = newScriptedRestTransport()
+  scripted.expectRequest(jsonResponse(200, %*[entitlement()]))
+  let client = startedClient(scripted)
+  discard waitFor client.listCurrentUserEntitlements(ApplicationId.parseId("1"))
+  waitFor client.stop()
+  doAssert scripted.observedRequests()[0].authRequirement == darOAuthBearer
   scripted.assertSatisfied()
 
 block query_builders_reject_ambiguous_or_oversized_input:
@@ -185,5 +208,7 @@ block mutating_entitlement_operations_choose_idempotency_explicitly:
   waitFor client.stop()
   let observed = scripted.observedRequests()
   doAssert observed[0].httpMethod == hmDelete
+  doAssert observed[0].authRequirement == darBotOrOAuthBearer
   doAssert observed[1].httpMethod == hmPost
+  doAssert observed[1].authRequirement == darBotOrOAuthBearer
   scripted.assertSatisfied()

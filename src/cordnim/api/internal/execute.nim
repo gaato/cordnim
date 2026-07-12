@@ -3,6 +3,8 @@
 ## Domain modules provide a generated raw route and a semantic JSON decoder.
 ## This module sends the request through the central scheduler, converts HTTP
 ## failures with `submitChecked`, and keeps response bodies out of diagnostics.
+## Authentication is a required argument at this boundary: every semantic
+## operation must own its Bot, OAuth bearer, public, or token-route contract.
 
 import std/[json, options]
 
@@ -56,8 +58,8 @@ proc requireEmptyBody(request: raw_request.RawRequest;
 
 proc executeChecked*(client: ChronosRestClient;
                      raw: raw_request.RawRequest;
+                     auth: DiscordAuthRequirement;
                      meta = defaultRequestMeta();
-                     auth = darConfigured;
                      statuses = anySuccessStatuses):
                      Future[TransportResponse] {.async.} =
   ## Executes `raw` and returns one successful transport response.
@@ -69,12 +71,12 @@ proc executeChecked*(client: ChronosRestClient;
 
 proc executeDocument*(client: ChronosRestClient;
                       raw: raw_request.RawRequest;
+                      auth: DiscordAuthRequirement;
                       meta = defaultRequestMeta();
-                      auth = darConfigured;
                       statuses: set[SuccessStatus] = {SuccessStatus(200)}):
                       Future[JsonNode] {.async.} =
   ## Executes `raw` and parses a non-empty successful JSON response.
-  let response = await client.executeChecked(raw, meta, auth, statuses)
+  let response = await client.executeChecked(raw, auth, meta, statuses)
   if response.body.len == 0:
     raise raw.decodeFailure("Discord REST response body is empty")
   try:
@@ -85,14 +87,14 @@ proc executeDocument*(client: ChronosRestClient;
 proc executeJson*[T](client: ChronosRestClient;
                      raw: raw_request.RawRequest;
                      decoder: JsonDecoder[T];
+                     auth: DiscordAuthRequirement;
                      meta = defaultRequestMeta();
-                     auth = darConfigured;
                      statuses: set[SuccessStatus] = {SuccessStatus(200)}):
                      Future[T] {.async.} =
   ## Executes one request and applies a semantic decoder to its JSON response.
   if decoder.isNil:
     raise newException(ValueError, "semantic REST decoder is required")
-  let document = await client.executeDocument(raw, meta, auth, statuses)
+  let document = await client.executeDocument(raw, auth, meta, statuses)
   try:
     return decoder(document)
   except DecodeError:
@@ -103,8 +105,8 @@ proc executeJson*[T](client: ChronosRestClient;
 proc executeOptionalJson*[T](client: ChronosRestClient;
                              raw: raw_request.RawRequest;
                              decoder: JsonDecoder[T];
+                             auth: DiscordAuthRequirement;
                              meta = defaultRequestMeta();
-                             auth = darConfigured;
                              statuses: set[SuccessStatus] =
                                {SuccessStatus(200)}):
                              Future[Option[T]] {.async.} =
@@ -114,7 +116,7 @@ proc executeOptionalJson*[T](client: ChronosRestClient;
   ## flags or whether a resource was newly created.
   if decoder.isNil:
     raise newException(ValueError, "semantic REST decoder is required")
-  let response = await client.executeChecked(raw, meta, auth, statuses)
+  let response = await client.executeChecked(raw, auth, meta, statuses)
   if response.status == 204 or response.status == 205:
     raw.requireEmptyBody(response)
     return none(T)
@@ -135,9 +137,9 @@ proc executeOptionalJson*[T](client: ChronosRestClient;
 proc executeJsonArray*[T](client: ChronosRestClient;
                           raw: raw_request.RawRequest;
                           decoder: JsonDecoder[T];
+                          auth: DiscordAuthRequirement;
                           meta = defaultRequestMeta();
                           allowNull = false;
-                          auth = darConfigured;
                           statuses: set[SuccessStatus] =
                             {SuccessStatus(200)}): Future[seq[T]] {.async.} =
   ## Executes one request and decodes each element of a JSON array.
@@ -146,7 +148,7 @@ proc executeJsonArray*[T](client: ChronosRestClient;
   ## to treating that wire value as an empty semantic collection.
   if decoder.isNil:
     raise newException(ValueError, "semantic REST decoder is required")
-  let document = await client.executeDocument(raw, meta, auth, statuses)
+  let document = await client.executeDocument(raw, auth, meta, statuses)
   if document.kind == JNull and allowNull:
     return @[]
   if document.kind != JArray:
@@ -162,10 +164,10 @@ proc executeJsonArray*[T](client: ChronosRestClient;
 
 proc executeNoContent*(client: ChronosRestClient;
                        raw: raw_request.RawRequest;
+                       auth: DiscordAuthRequirement;
                        meta = defaultRequestMeta();
-                       auth = darConfigured;
                        statuses: set[SuccessStatus] =
                          {SuccessStatus(204)}): Future[void] {.async.} =
   ## Executes a request whose successful response has no semantic body.
-  let response = await client.executeChecked(raw, meta, auth, statuses)
+  let response = await client.executeChecked(raw, auth, meta, statuses)
   raw.requireEmptyBody(response)

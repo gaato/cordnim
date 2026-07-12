@@ -43,7 +43,9 @@ suite "semantic REST execution":
     let raw = raw_request.initRawRequest(raw_route.httpGet, "/semantic-test")
     var meta = runtime_request.defaultRequestMeta()
     meta.idempotency = runtime_request.idSafe
-    check (waitFor client.executeJson(raw, decodeName, meta)) == "cordnim"
+    check not compiles(client.executeJson(raw, decodeName))
+    check (waitFor client.executeJson(raw, decodeName,
+      auth = runtime_request.darConfigured, meta = meta)) == "cordnim"
     check probe.requests.len == 1
     check probe.requests[0].route.canonical == "GET /semantic-test"
     check probe.requests[0].meta.idempotency == runtime_request.idSafe
@@ -68,9 +70,10 @@ suite "semantic REST execution":
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpGet, "/list")
     check (waitFor client.executeJsonArray(raw, decodeName,
-      allowNull = true)).len == 0
+      auth = runtime_request.darNone, allowNull = true)).len == 0
     expect DecodeError:
-      discard waitFor client.executeJsonArray(raw, decodeName)
+      discard waitFor client.executeJsonArray(raw, decodeName,
+        auth = runtime_request.darNone)
     waitFor client.stop()
 
   test "decode diagnostics contain the route but not response bytes":
@@ -81,7 +84,8 @@ suite "semantic REST execution":
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpGet, "/safe-route")
     try:
-      discard waitFor client.executeJson(raw, decodeName)
+      discard waitFor client.executeJson(raw, decodeName,
+        auth = runtime_request.darNone)
       check false
     except DecodeError as error:
       check error.metadata.route == some("GET /safe-route")
@@ -94,7 +98,7 @@ suite "semantic REST execution":
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpDelete, "/forbidden")
     expect PermissionError:
-      waitFor client.executeNoContent(raw)
+      waitFor client.executeNoContent(raw, auth = runtime_request.darBot)
     waitFor client.stop()
 
   test "optional JSON distinguishes an empty successful response":
@@ -103,10 +107,12 @@ suite "semantic REST execution":
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpPost, "/maybe-created")
     check (waitFor client.executeOptionalJson(raw, decodeName,
+      auth = runtime_request.darNone,
       statuses = {SuccessStatus(204)})).isNone
     probe.response = TransportResponse(
       status: 201, body: bytes("""{"name":"created"}"""))
     check (waitFor client.executeOptionalJson(raw, decodeName,
+      auth = runtime_request.darNone,
       statuses = {SuccessStatus(201)})) ==
       some("created")
     waitFor client.stop()
@@ -122,7 +128,8 @@ suite "semantic REST execution":
         body: bytes("""{"name":"must-not-exist"}"""))
       try:
         discard waitFor client.executeOptionalJson(
-          raw, decodeName, statuses = {SuccessStatus(status)})
+          raw, decodeName, auth = runtime_request.darNone,
+          statuses = {SuccessStatus(status)})
         check false
       except DecodeError as error:
         check error.metadata.status == some(status)
@@ -137,7 +144,8 @@ suite "semantic REST execution":
     client.start()
     let raw = raw_request.initRawRequest(raw_route.httpPost, "/expects-200")
     try:
-      discard waitFor client.executeJson(raw, decodeName)
+      discard waitFor client.executeJson(raw, decodeName,
+        auth = runtime_request.darNone)
       check false
     except DecodeError as error:
       check error.metadata.status == some(201)
@@ -156,7 +164,8 @@ suite "semantic REST execution":
         status: status, body: bytes(privateBody))
       try:
         waitFor client.executeNoContent(
-          raw, statuses = {SuccessStatus(status)})
+          raw, auth = runtime_request.darNone,
+          statuses = {SuccessStatus(status)})
         check false
       except DecodeError as error:
         check error.metadata.status == some(status)

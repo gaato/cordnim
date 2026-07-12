@@ -117,7 +117,7 @@ proc getGatewayBot*(client: ChronosRestClient): Future[GatewayBotInfo] {.
   meta.idempotency = idSafe
   let raw = raw_request.initRawRequest(gateway_routes.getBotGateway)
   return await client.executeJson(
-    raw, decodeGatewayBotInfo, meta, auth = darBot)
+    raw, decodeGatewayBotInfo, auth = darBot, meta = meta)
 
 proc planRecommendedShards*(info: GatewayBotInfo;
                             processIndex = 0'u16;

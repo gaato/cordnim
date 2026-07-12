@@ -18,7 +18,7 @@ proc fetchCurrentApplication*(client: ChronosRestClient;
   ## Fetches the application owned by the current bot credential.
   let raw = raw_request.initRawRequest(application_routes.getMyApplication)
   return await client.executeJson(raw, decodePrivateApplication,
-    options.requestMeta(idSafe))
+    auth = darBot, meta = options.requestMeta(idSafe))
 
 proc fetchApplication*(client: ChronosRestClient;
                        applicationId: ApplicationId;
@@ -29,4 +29,4 @@ proc fetchApplication*(client: ChronosRestClient;
     initRawParameter("application_id", $applicationId),
   ])
   return await client.executeJson(raw, decodePrivateApplication,
-    options.requestMeta(idSafe))
+    auth = darBot, meta = options.requestMeta(idSafe))

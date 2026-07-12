@@ -141,7 +141,7 @@ proc listEntitlements*(client: ChronosRestClient;
   ])
   raw.apply(query)
   return await client.executeJsonArray(raw, decodeEntitlement,
-    options.requestMeta(idSafe))
+    auth = darBotOrOAuthBearer, meta = options.requestMeta(idSafe))
 
 proc fetchEntitlement*(client: ChronosRestClient;
                         applicationId: ApplicationId;
@@ -154,7 +154,7 @@ proc fetchEntitlement*(client: ChronosRestClient;
     initRawParameter("entitlement_id", $entitlementId),
   ])
   return await client.executeJson(raw, decodeEntitlement,
-    options.requestMeta(idSafe))
+    auth = darBotOrOAuthBearer, meta = options.requestMeta(idSafe))
 
 proc createTestEntitlement*(client: ChronosRestClient;
                             applicationId: ApplicationId;
@@ -166,7 +166,7 @@ proc createTestEntitlement*(client: ChronosRestClient;
     initRawParameter("application_id", $applicationId),
   ], grant.toJson())
   return await client.executeJson(raw, decodeEntitlement,
-    options.requestMeta(idNever))
+    auth = darBot, meta = options.requestMeta(idNever))
 
 proc deleteTestEntitlement*(client: ChronosRestClient;
                             applicationId: ApplicationId;
@@ -178,7 +178,8 @@ proc deleteTestEntitlement*(client: ChronosRestClient;
     initRawParameter("application_id", $applicationId),
     initRawParameter("entitlement_id", $entitlementId),
   ])
-  await client.executeNoContent(raw, options.requestMeta(idSafe))
+  await client.executeNoContent(raw, auth = darBotOrOAuthBearer,
+    meta = options.requestMeta(idSafe))
 
 proc consumeEntitlement*(client: ChronosRestClient;
                          applicationId: ApplicationId;
@@ -190,7 +191,8 @@ proc consumeEntitlement*(client: ChronosRestClient;
     initRawParameter("application_id", $applicationId),
     initRawParameter("entitlement_id", $entitlementId),
   ])
-  await client.executeNoContent(raw, options.requestMeta(idNever))
+  await client.executeNoContent(raw, auth = darBotOrOAuthBearer,
+    meta = options.requestMeta(idNever))
 
 proc listCurrentUserEntitlements*(
     client: ChronosRestClient;
@@ -204,7 +206,7 @@ proc listCurrentUserEntitlements*(
     ])
   raw.apply(query)
   return await client.executeJsonArray(raw, decodeEntitlement,
-    options.requestMeta(idSafe))
+    auth = darOAuthBearer, meta = options.requestMeta(idSafe))
 
 proc listSkuSubscriptions*(client: ChronosRestClient;
                            skuId: SkuId;
@@ -217,7 +219,7 @@ proc listSkuSubscriptions*(client: ChronosRestClient;
   ])
   raw.apply(query)
   return await client.executeJsonArray(raw, decodeSubscription,
-    options.requestMeta(idSafe))
+    auth = darBotOrOAuthBearer, meta = options.requestMeta(idSafe))
 
 proc fetchSkuSubscription*(client: ChronosRestClient;
                            skuId: SkuId;
@@ -232,4 +234,4 @@ proc fetchSkuSubscription*(client: ChronosRestClient;
   ])
   raw.addOptional("user_id", userId)
   return await client.executeJson(raw, decodeSubscription,
-    options.requestMeta(idSafe))
+    auth = darBotOrOAuthBearer, meta = options.requestMeta(idSafe))
