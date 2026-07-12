@@ -34,6 +34,8 @@ import models/poll
 import models/channel
 import models/guild
 import models/message
+import models/monetization
+import models/oauth
 import models/webhook
 
 export common
@@ -44,4 +46,6 @@ export poll
 export channel
 export guild
 export message
+export monetization
+export oauth
 export webhook
