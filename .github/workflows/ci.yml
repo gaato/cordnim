@@ -137,8 +137,8 @@ jobs:
       - name: Replay pinned core dependencies
         run: atlas --noexec rep atlas.lock
 
-      # The Nimble task starts from each documented public umbrella. The main
-      # facade deliberately does not import lower-level protocol namespaces.
+      # A documentation-only root imports every public surface. The Nimble task
+      # generates the project once, then checks the manifest-derived contract.
       - name: Generate core API documentation
         run: nimble docs -y
 
@@ -146,44 +146,8 @@ jobs:
         working-directory: voice
         run: nimble docs -y
 
-      - name: Require every public entry page
-        shell: bash
-        run: |
-          set -euo pipefail
-          pages=(
-            htmldocs/cordnim.html
-            htmldocs/cordnim/app.html
-            htmldocs/cordnim/app/gateway_runtime.html
-            htmldocs/cordnim/application_manifest.html
-            htmldocs/cordnim/build_info.html
-            htmldocs/cordnim/cache.html
-            htmldocs/cordnim/cli.html
-            htmldocs/cordnim/collectors.html
-            htmldocs/cordnim/commands.html
-            htmldocs/cordnim/components.html
-            htmldocs/cordnim/core.html
-            htmldocs/cordnim/gateway.html
-            htmldocs/cordnim/interactions.html
-            htmldocs/cordnim/observability.html
-            htmldocs/cordnim/raw.html
-            htmldocs/cordnim/rest.html
-            htmldocs/cordnim/runtime.html
-            htmldocs/cordnim/testing.html
-            voice/htmldocs/cordnim_voice.html
-            voice/htmldocs/cordnim/voice/libdave/raw.html
-            htmldocs/theindex.html
-            htmldocs/nimdoc.out.css
-            htmldocs/dochack.js
-            voice/htmldocs/theindex.html
-            voice/htmldocs/nimdoc.out.css
-            voice/htmldocs/dochack.js
-          )
-          for page in "${pages[@]}"; do
-            test -s "$page" || {
-              printf 'missing generated API page: %s\n' "$page" >&2
-              exit 1
-            }
-          done
+      - name: Verify generated core documentation contract
+        run: python3 tools/check_doc_contract.py htmldocs
 
       - name: Check generated documentation links
         run: |

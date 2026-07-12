@@ -77,10 +77,12 @@ runtime request type. The bridge keeps token-bearing paths out of scheduler
 diagnostics. Applications can attach priority, deadline, idempotency, retry, and
 cancellation policy before submission.
 
-Use the raw route when a high-level wrapper is absent or would hide a Discord
-field you need. Keep framework code on `cordnim`, `cordnim/interactions`, and
-`cordnim/gateway` so generated declaration changes do not spread through the
-application layer.
+Use the raw route when a semantic wrapper is absent, multipart support is still
+raw-only, or a wrapper would hide a Discord field you need. Keep ordinary REST
+calls on `cordnim/api` and framework code on `cordnim`,
+`cordnim/interactions`, and `cordnim/gateway` so generated declaration changes
+do not spread through application code. The raw request should still run through
+the supervised REST client.
 
 ## Compatibility identity
 

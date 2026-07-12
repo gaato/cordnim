@@ -9,8 +9,8 @@ or retries.
 
 The layers run in this order:
 
-1. A generated route builds `cordnim/raw/request.RawRequest` with typed path and
-   query parameters.
+1. A semantic API validates a typed request, or an advanced caller selects a
+   generated route directly, then builds `cordnim/raw/request.RawRequest`.
 2. `toRuntimeRequest` renders that value into `cordnim/rest.RawRequest` and
    attaches `RequestMeta`.
 3. `ChronosRestClient` schedules the request by priority, deadline, route, and
@@ -21,6 +21,19 @@ The layers run in this order:
 `RawRequest.$` omits the rendered path, headers, query, and body. A webhook or
 interaction token can appear in the path, so logs should use `RouteKey` and a
 correlation ID.
+
+## Semantic operations
+
+`cordnim/api` uses the generated routes without exposing generated request
+objects as application contracts. Every operation supplies an explicit
+`DiscordAuthRequirement`, accepted status set, decoder, and idempotency value.
+The shared executor has no default authentication argument, so adding a new
+semantic operation without choosing its credential boundary does not compile.
+
+Guild, member, role, channel, thread, message, and management webhook APIs use
+bot auth. OAuth identity and current-user entitlement operations use bearer
+auth. Webhook-token and interaction callback routes use no authorization header.
+See [api.md](api.md) for the operation groups and typed PATCH values.
 
 ## Client ownership
 

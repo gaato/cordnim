@@ -137,9 +137,15 @@ pushd voice
 nimble apiCheck
 nimble docs
 popd
-python3 tools/check_doc_links.py htmldocs
+python3 tools/check_doc_contract.py htmldocs
 python3 tools/check_doc_links.py voice/htmldocs
 ```
+
+The core docs task removes only `htmldocs`, runs one `nim doc --project` from
+`cordnim/doc_index`, then derives required HTML pages from `publicEntries` in
+`cordnim.nimble`. A new public entry therefore fails documentation generation
+until its source compiles and its page exists; CI does not maintain a second
+handwritten page list.
 
 Protocol and ownership-sensitive focused tests should also pass with release
 checks and danger optimizations. Keep their compiler caches and executables in a

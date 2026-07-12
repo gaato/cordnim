@@ -15,6 +15,10 @@ The public surfaces have different stability and ownership roles:
 - `cordnim` is the application facade. It exports application composition,
   commands, components, core protocol values, build identity, and the HTTP
   interaction runtime factory.
+- `cordnim/api` owns validated semantic REST requests, operation-specific
+  authentication, accepted success statuses, and idempotency evidence.
+- `cordnim/models` owns strict named Discord resources and retained unknown
+  response fields shared by REST, Gateway dispatch, and caches.
 - `cordnim/interactions` owns transport-independent interaction dispatch,
   response authority, HTTP verification, persistent routes, and HTTP/Gateway
   delivery adapters.
@@ -103,10 +107,18 @@ decoder.
 
 ## REST and raw HTTP
 
-Generated raw routes build values. `toRuntimeRequest` renders those values and
-attaches scheduler metadata. `ChronosRestClient` then applies priority,
-deadlines, cancellation groups, learned bucket IDs, global limits, and bounded
-retry policy before `DiscordHttpTransport` performs I/O.
+Semantic modules build validated request objects over generated raw routes.
+Each operation chooses bot, OAuth bearer, public, or token-path authentication;
+pins the successful status shapes it can decode; and supplies idempotency
+evidence the caller cannot widen. `FieldEdit[T]` preserves omit, JSON null, and
+concrete values across guild, member, role, channel, message, and webhook PATCH
+bodies.
+
+Generated raw routes remain the complete inventory. `toRuntimeRequest` renders
+semantic or raw values and attaches scheduler metadata. `ChronosRestClient`
+then applies priority, deadlines, cancellation groups, learned bucket IDs,
+global limits, and bounded retry policy before `DiscordHttpTransport` performs
+I/O. See [api.md](api.md) for covered resource groups and the raw fallback.
 
 Retry requires explicit idempotency evidence and a reproducible body. Multipart
 requests retain fresh-cursor source factories rather than open handles. Each

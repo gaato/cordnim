@@ -13,6 +13,8 @@ placeholder, and breaking API changes remain allowed while the design settles.
 | Import | Purpose |
 | --- | --- |
 | `cordnim` | Application composition, typed IDs and secrets, commands, components, and HTTP interaction runtime |
+| `cordnim/api` | Typed REST operations with endpoint-owned auth, status, and retry contracts |
+| `cordnim/models` | Strict semantic Discord resources with retained unknown fields |
 | `cordnim/interactions` | Shared HTTP/Gateway dispatcher, response authority, verification, and persistent routes |
 | `cordnim/rest` | Chronos HTTP transport, dynamic rate-limit scheduler, replayable multipart requests, and checked errors |
 | `cordnim/gateway` | Gateway v10 transport, compression, session and shard runners, coordination, dispatch, and entity cache |
@@ -153,7 +155,9 @@ nimble docs
 ```
 
 The guides cover [architecture](docs/architecture.md),
+[semantic REST APIs](docs/api.md),
 [commands](docs/commands.md), [components and forms](docs/components.md),
 [interactions](docs/interactions.md), [REST](docs/rest.md),
 [Gateway operation](docs/gateway.md), [raw schema generation](docs/raw-schema.md),
-[runtime operations](docs/operations.md), and [security](docs/security.md).
+[testing](docs/testing.md), [runtime operations](docs/operations.md), and
+[security](docs/security.md).

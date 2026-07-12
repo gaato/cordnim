@@ -16,7 +16,22 @@ requires "zlib >= 0.2.0 & < 0.3.0"
 
 const publicEntries = [
   "src/cordnim.nim",
+  "src/cordnim/api.nim",
+  "src/cordnim/api/applications.nim",
+  "src/cordnim/api/channels.nim",
+  "src/cordnim/api/fields.nim",
+  "src/cordnim/api/gateway_bootstrap.nim",
+  "src/cordnim/api/guilds.nim",
+  "src/cordnim/api/members.nim",
+  "src/cordnim/api/messages.nim",
+  "src/cordnim/api/monetization.nim",
+  "src/cordnim/api/oauth2.nim",
+  "src/cordnim/api/options.nim",
+  "src/cordnim/api/threads.nim",
+  "src/cordnim/api/webhooks.nim",
   "src/cordnim/app.nim",
+  "src/cordnim/app/gateway_config.nim",
+  "src/cordnim/app/gateway_interactions.nim",
   "src/cordnim/app/gateway_runtime.nim",
   "src/cordnim/application_manifest.nim",
   "src/cordnim/build_info.nim",
@@ -28,6 +43,7 @@ const publicEntries = [
   "src/cordnim/core.nim",
   "src/cordnim/gateway.nim",
   "src/cordnim/interactions.nim",
+  "src/cordnim/models.nim",
   "src/cordnim/observability.nim",
   "src/cordnim/raw.nim",
   "src/cordnim/rest.nim",
@@ -47,10 +63,11 @@ task apiCheck, "Compile every public entry module without linking":
 
 task docs, "Build documentation for every public entry module":
   let docRoot = getPkgDir() & "/src"
-  let docCommand = "nim doc --project --docRoot:\"" & docRoot &
-    "\" --mm:orc --path:src --outdir:htmldocs "
-  for entry in publicEntries:
-    exec docCommand & entry
+  exec "python3 tools/check_doc_contract.py --clean htmldocs"
+  exec "nim doc --project --docRoot:\"" & docRoot &
+    "\" --mm:orc --path:src --outdir:htmldocs src/cordnim/doc_index.nim"
+  exec "python3 tools/check_doc_contract.py htmldocs"
+  exec "python3 tools/check_doc_links.py htmldocs"
 
 task schema, "Regenerate the pinned Discord raw layer":
   exec "nim c -r --mm:orc --nimcache:build/schema --out:build/schema_codegen --path:src tools/schema_codegen.nim"

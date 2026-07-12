@@ -35,6 +35,11 @@ adds an empty `allowed_mentions.parse` policy unless the caller supplied one.
 Components V2 messages have a total component-node limit. Modal callbacks use a
 different root limit and must not reuse the message-tree count.
 
+`cordnim/api/messages` and `cordnim/api/webhooks` carry the mode in their create
+and edit types. A V2 edit always re-emits the permanent flag. Upgrading a legacy
+message clears content, embeds, stickers, polls, and mention parsing before
+writing V2 components; no API converts it back to legacy mode.
+
 Premium buttons contain a SKU target. Discord does not permit a label, emoji,
 custom ID, or URL on that button style. Link buttons use a URL and no custom ID.
 Interactive buttons use a custom ID and no URL.

@@ -13,6 +13,11 @@ separately from any future package version.
   arbitrary-width flags, and current permission bit names.
 - Add Chronos HTTP/TLS, dynamic REST buckets, priority/deadline scheduling,
   bounded idempotent retries, checked errors, and token-free route diagnostics.
+- Add semantic application, OAuth, monetization, message, webhook, guild, role,
+  member, channel, thread, and poll REST APIs with operation-owned auth, status,
+  audit, and retry contracts.
+- Add strict REST result models for bans, prune and bulk-ban outcomes, thread
+  listings and members, and announcement follows while retaining unknown fields.
 - Add signed HTTP interactions, replay rejection, shared HTTP/Gateway command
   routing, deadline-clamped command auto-defer and autocomplete, delivery
   receipts, redacted failure observation, typed component and modal dispatch,
@@ -31,6 +36,6 @@ separately from any future package version.
 - Separate the unassigned build label from the pinned Discord schema identity
   and the Nimble packaging placeholder.
 - Add the separate Voice Gateway v8/DAVE package using the official libdave ABI.
-- Add ORC Tier 1 CI, raw-schema and Unicode-table drift checks, documentation for
-  every public entry module, operator guides, sanitizer fuzz targets, and
-  deterministic transport-free tests.
+- Add ORC Tier 1 CI, raw-schema and Unicode-table drift checks, single-pass
+  documentation with a manifest-derived page contract, operator and testing
+  guides, sanitizer fuzz targets, and deterministic transport-free tests.

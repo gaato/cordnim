@@ -42,10 +42,12 @@ carry explicit idempotency evidence.
 
 ## Credentials and diagnostics
 
-Use `Secret[BotToken]`, `Secret[InteractionToken]`, and
-`Secret[WebhookToken]` at credential boundaries. Their string, representation,
-and JSON renderers return `[REDACTED]`. `reveal` copies the value for a protocol
-call; keep that copy out of logs and long-lived objects.
+Use `Secret[BotToken]`, `Secret[OAuthBearerToken]`,
+`Secret[InteractionToken]`, and `Secret[WebhookToken]` at credential boundaries.
+Their string, representation, and JSON renderers return `[REDACTED]`. `reveal`
+copies the value for a protocol call; keep that copy out of logs and long-lived
+objects. `MemberAdd` also overrides generic renderers so the user OAuth access
+token cannot be reached by diagnostics before its outbound body is built.
 
 Webhook and interaction tokens appear in URL paths. `RawRequest.$` omits
 rendered paths, query values, headers, and bodies. The REST scheduler uses route
@@ -131,6 +133,8 @@ old verification keys only for the planned rotation window.
 ## Unsupported credentials
 
 The bot REST transport constructs `Authorization: Bot ...` from a typed token.
-The interaction webhook transport sends no authorization header because
-Discord authenticates the token in the path. User tokens and self-bot operation
-are outside the supported API.
+The OAuth transport constructs `Authorization: Bearer ...` for documented
+OAuth endpoints. A user OAuth access token may appear in `addGuildMember`'s
+request body, but Cordnim does not support user-token automation or self-bots.
+Interaction and webhook token routes send no authorization header because
+Discord authenticates the token in the path.

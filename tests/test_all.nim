@@ -16,8 +16,10 @@ when isMainModule:
     if path.isLeafTest:
       paths.add path
   paths.sort()
-  let cacheRoot = getTempDir() / "cordnim-test-nimcache"
-  let binaryRoot = getTempDir() / "cordnim-test-bin"
+  let buildRoot = getEnv("CORDNIM_TEST_BUILD_DIR",
+    projectDir / "build" / "test-leaves")
+  let cacheRoot = buildRoot / "nimcache"
+  let binaryRoot = buildRoot / "bin"
   createDir(cacheRoot)
   createDir(binaryRoot)
   for path in paths:
