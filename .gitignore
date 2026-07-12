@@ -30,3 +30,4 @@ fuzz/corpus/raw_json/*
 nimble.develop
 nimble.paths
 nimbledeps
+.nimbuild/
