@@ -1,5 +1,7 @@
 # cordnim
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/gaato/cordnim)
+
 cordnim is a Discord application library for Nim 2.2. It provides typed slash
 commands, components and modals, HTTP and Gateway interactions, rate-limited
 REST calls, and resumable Gateway shards.
