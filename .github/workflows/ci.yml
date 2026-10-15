@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -92,7 +92,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -129,7 +129,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -195,7 +195,7 @@ jobs:
       # Enable Settings > Pages > Source: GitHub Actions before the first run.
       - name: Deploy GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
 
   devel:
     name: Nim devel (advisory)
@@ -211,7 +211,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up latest Nim devel snapshot
-        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
           nim-version: devel
           use-nightlies: "true"
@@ -239,7 +239,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@cb1fc1270b117457dd0d9f610ec981fad3369cec # v2.3.0
+        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
