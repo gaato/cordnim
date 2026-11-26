@@ -83,7 +83,7 @@ jobs:
 
   schema:
     name: Generated schema is current
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Check out source
@@ -120,7 +120,7 @@ jobs:
 
   docs:
     name: API documentation
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Check out source
@@ -182,7 +182,7 @@ jobs:
     name: Publish API documentation
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     needs: [tier1, schema, docs]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: read
@@ -199,7 +199,7 @@ jobs:
 
   devel:
     name: Nim devel (advisory)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     # Compiler development snapshots can regress independently of cordnim.
     # Keep this visible without blocking merges validated by the pinned release.
@@ -230,7 +230,7 @@ jobs:
 
   voice-libdave:
     name: Official libdave dynamic binding / Linux x86_64
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Check out source
