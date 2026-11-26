@@ -44,7 +44,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        uses: jiro4989/setup-nim-action@08957181dc5baf5f8446497598f798020a03e66a # v2.5.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -92,7 +92,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        uses: jiro4989/setup-nim-action@08957181dc5baf5f8446497598f798020a03e66a # v2.5.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -129,7 +129,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        uses: jiro4989/setup-nim-action@08957181dc5baf5f8446497598f798020a03e66a # v2.5.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
@@ -169,7 +169,7 @@ jobs:
           path: build/pages
 
       - name: Upload API documentation
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cordnim-api-docs
           path: |
@@ -211,7 +211,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up latest Nim devel snapshot
-        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        uses: jiro4989/setup-nim-action@08957181dc5baf5f8446497598f798020a03e66a # v2.5.1
         with:
           nim-version: devel
           use-nightlies: "true"
@@ -239,7 +239,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Nim ${{ env.CORDNIM_NIM_VERSION }}
-        uses: jiro4989/setup-nim-action@189b145833368cc92f1e7b3e166a25a3e057a693 # v2.3.1
+        uses: jiro4989/setup-nim-action@08957181dc5baf5f8446497598f798020a03e66a # v2.5.1
         with:
           nim-version: ${{ env.CORDNIM_NIM_VERSION }}
           parent-nim-install-directory: ${{ runner.temp }}
